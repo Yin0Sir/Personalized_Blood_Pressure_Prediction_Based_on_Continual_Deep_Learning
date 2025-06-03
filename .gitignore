@@ -1,0 +1,30 @@
+# ===== Python cache =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# ===== VSCode =====
+.vscode/
+
+# ===== TensorBoard 日志文件（自动生成，无需版本控制）=====
+Model_Training/TensorBoard/
+
+# ===== 模型文件=====
+PTH/
+*.pth
+
+# ===== 临时/日志/测试文件 =====
+*.log
+*.tmp
+
+# ===== MATLAB 临时文件（因为你有 .m 文件）=====
+*.asv
+*.autosave
+*.mat~
+*.mlx~
+*.fig
+
+# ===== 操作系统文件 =====
+.DS_Store
+Thumbs.db
