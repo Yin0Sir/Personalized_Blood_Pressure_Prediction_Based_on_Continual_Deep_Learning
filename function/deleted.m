@@ -11,8 +11,8 @@ subsetFiles = {
 };
 
 outputFiles = {
-    'D:\Data\PulseDB\Supplementary_Subset_Files\VitalDB_CalBased_Test_Subset_1000.mat', ...
-    'D:\Data\PulseDB\Supplementary_Subset_Files\VitalDB_Train_Subset_1000.mat'
+    'D:\Data\PulseDB\Supplementary_Subset_Files\VitalDB_Train_Subset_1000.mat', ...
+    'D:\Data\PulseDB\Supplementary_Subset_Files\VitalDB_CalBased_Test_Subset_1000.mat'
 };
 
 for idx = 1:2
