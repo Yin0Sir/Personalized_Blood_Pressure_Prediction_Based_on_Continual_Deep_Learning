@@ -1,4 +1,4 @@
-load('selected_users.mat');  % 变量名应为 selected_users (cell array 或 string array)
+load('D:\Data\PulseDB\Supplementary_Subset_Files\293nums.mat');  % 变量名应为 selected_users (cell array 或 string array)
 if isstruct(selected_users)
     selected_users = selected_users.selected_users;  % 如果是 struct 中的字段
 end
@@ -6,13 +6,13 @@ selected_users = string(selected_users);  % 确保是 string 格式
 
 % 2. 加载两个原始数据集
 subsetFiles = {
-    'VitalDB_CalBased_Test_Subset.mat', ...
-    'VitalDB_Train_Subset.mat'
+    "D:\Data\PulseDB\Supplementary_Subset_Files\VitalDB_Train_Subset.mat", ...
+    "D:\Data\PulseDB\Supplementary_Subset_Files\VitalDB_CalBased_Test_Subset.mat"
 };
 
 outputFiles = {
-    'VitalDB_CalBased_Test_Subset_Removed293.mat', ...
-    'VitalDB_Train_Subset_Removed293.mat'
+    'D:\Data\PulseDB\Supplementary_Subset_Files\VitalDB_CalBased_Test_Subset_1000.mat', ...
+    'D:\Data\PulseDB\Supplementary_Subset_Files\VitalDB_Train_Subset_1000.mat'
 };
 
 for idx = 1:2
