@@ -28,19 +28,23 @@ class Dataset(data.Dataset):
 def Build_Dataset(Path, Label):
     Data = loadmat(Path)
     # 获取前两个通道，即ECG和PPG信号
-    return Dataset(Data['Subset']['Signals'][:, 0:2, :], Data['Subset'][Label])
+    # return Dataset(Data['Subset']['Signals'][:, 0:2, :], Data['Subset'][Label])
+    return Dataset(Data['Subset_new']['Signals'][:, 0:2, :], Data['Subset_new'][Label])
 
-Train_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_Train_Subset.mat'
-Test_CalBased_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalBased_Test_Subset.mat'
-Test_CalFree_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalFree_Test_Subset.mat'
+# Train_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_Train_Subset.mat'
+# Test_CalBased_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalBased_Test_Subset.mat'
+# Test_CalFree_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalFree_Test_Subset.mat'
+
+Train_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_Train_Subset_1000.mat'
+Test_CalBased_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalBased_Test_Subset_1000.mat'
+
 
 Train_Data = Build_Dataset(Train_File, 'SBP')
-Test_CalBased_Data = Build_Dataset(Test_CalBased_File, 'SBP')
-Test_CalFree_Data = Build_Dataset(Test_CalFree_File, 'SBP')
+Test_Data = Build_Dataset(Test_CalBased_File, 'SBP')
 
 if __name__ == '__main__':
     Seed(6)
-    model = CF_Basic_s.Resnet18_1D()
+    model = CF_Basic_s.Resnet34_1D()
     # model = DCCR.DCCR_1ECG()
     # model = models.VGG16()
     # model = DDCCor.DDCCR_Net()
@@ -58,5 +62,5 @@ if __name__ == '__main__':
     BP_optimizer = eval(Settings['BP_optimizer'])
     model_trainer = eval(Settings['trainer'])
     # 设置训练集和对比下的两个设置集
-    model_trainer.Set_Dataset(Train_Data, {'Test_CalBased': Test_CalBased_Data})
+    model_trainer.Set_Dataset(Train_Data, {'Test_Data': Test_Data})
     model_trainer.Train_Model()
