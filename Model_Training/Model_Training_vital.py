@@ -4,7 +4,7 @@ import numpy as np
 from mat73 import loadmat
 import torch.utils.data as data
 from Model_Def.Trainer import Model_Trainer
-from Model_Def.TIM import ResNet, CorNet, DDC, DDCCor, models, DC, DCCR
+from Model_Def.TIM import ResNet, CorNet, DDC, DDCCor, models, DC, DCCR, DDCCR_without_mse
 from Model_Def.EMBC import CF_Basic_l, CF_Basic_s, CFNet, DesCor
 
 def Seed(seed): 
@@ -28,27 +28,23 @@ class Dataset(data.Dataset):
 def Build_Dataset(Path, Label):
     Data = loadmat(Path)
     # 获取前两个通道，即ECG和PPG信号
-    # return Dataset(Data['Subset']['Signals'][:, 0:2, :], Data['Subset'][Label])
-    return Dataset(Data['Subset_new']['Signals'][:, 0:2, :], Data['Subset_new'][Label])
+    return Dataset(Data['Subset']['Signals'][:, 0:2, :], Data['Subset'][Label])
+    # return Dataset(Data['Subset_new']['Signals'][:, 0:2, :], Data['Subset_new'][Label])
 
-# Train_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_Train_Subset.mat'
-# Test_CalBased_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalBased_Test_Subset.mat'
+Train_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_Train_Subset.mat'
+Test_CalBased_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalBased_Test_Subset.mat'
 # Test_CalFree_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalFree_Test_Subset.mat'
 
-Train_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_Train_Subset_1000.mat'
-Test_CalBased_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalBased_Test_Subset_1000.mat'
-
+# Train_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_Train_Subset_1000.mat'
+# Test_CalBased_File = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalBased_Test_Subset_1000.mat'
 
 Train_Data = Build_Dataset(Train_File, 'SBP')
 Test_Data = Build_Dataset(Test_CalBased_File, 'SBP')
 
 if __name__ == '__main__':
     Seed(6)
-    model = CF_Basic_s.Resnet34_1D()
-    # model = DCCR.DCCR_1ECG()
-    # model = models.VGG16()
-    # model = DDCCor.DDCCR_Net()
-    # model = CorNet.CR_Net()
+    # model = CF_Basic_s.Resnet34_1D()
+    model = DDCCR_without_mse.DDCCR_Net()
     Seed(6)
     # 准备要记录的设置
     Settings = {'BP_optimizer': 'torch.optim.Adam(model.parameters(), lr=0.0001, betas=(0.9, 0.999), weight_decay=0)',
