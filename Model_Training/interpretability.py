@@ -193,7 +193,7 @@ def run_all(model_path, sample_path):
     # Saliency
     saliency = compute_saliency_map(model, input_tensor.clone(), label_tensor)
     plot_saliency(raw_signal, saliency)
-    plot_saliency_fft(raw_signal, saliency)
+    # plot_saliency_fft(raw_signal, saliency)
 
     # Grad-CAM
     compute_gradcam(model, input_tensor.clone(), label_tensor)
@@ -207,8 +207,8 @@ def run_all(model_path, sample_path):
     plot_occlusion(pos, err, raw_signal.shape[1])
 
     # SHAP
-    shap_values = approx_shap_segments(model, input_tensor.clone(), label_tensor)
-    plot_shap_bar(shap_values)
+    # shap_values = approx_shap_segments(model, input_tensor.clone(), label_tensor)
+    # plot_shap_bar(shap_values)
 
     print("✅ All interpretability visualizations generated.")
 
