@@ -99,13 +99,14 @@ def build_lstm_baseline():
         use_batchnorm_stem=True,
     )
 
+def lstm_o3_1d():
+    return build_lstm_baseline()
 
 # -------------- 自检 --------------
 if __name__ == "__main__":
-    B, C, L = 32, 2, 1250
-    x = torch.randn(B, C, L)
+    x = torch.randn(32, 2, 1250)
 
-    model = build_lstm_baseline()
+    model = lstm_o3_1d()
     y = model(x)
     print("Output shape:", y.shape)  # 期望: (32, 1)
 
