@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # DenseNet
 class DenseLayer(torch.nn.Module):
@@ -495,6 +496,208 @@ class MobileNetV3_large(torch.nn.Module):
         x = self.regressor(x)
         return x
     
+# MobileViT1D
+# —— 局部卷积块 + MobileViT 短块组合 —— #
+class MobileViTBlock1D(nn.Module):
+    def __init__(self, dim, kernel_size=3, patch_size=25, mlp_dim=128, dropout=0.1):
+        super().__init__()
+        self.conv1 = nn.Conv1d(dim, dim, kernel_size, padding=kernel_size//2)
+        self.conv2 = nn.Conv1d(dim, dim, kernel_size, padding=kernel_size//2)
+        self.norm = nn.BatchNorm1d(dim)
+
+        self.patch_size = patch_size
+        self.dim = dim
+        flatten_dim = patch_size * dim  # 每个 patch 展平后的维度
+        # 相当于 transformer 中的跨 patch attention
+        self.transformer = nn.Sequential(
+            nn.Linear(flatten_dim, mlp_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_dim, flatten_dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        # x: [B, C, L]
+        y = self.conv1(x)
+        y = self.conv2(F.relu(y))
+        y = self.norm(y)
+        # 切 patch
+        B, C, L = y.shape
+        y = y.view(B, C, L // self.patch_size, self.patch_size)
+        y = y.permute(0, 2, 3, 1).contiguous()  # [B, Npatch, patch_size, C]
+        y = y.flatten(2)  # 每 patch 展平 [B, Npatch, patch_size*C]
+        y = self.transformer(y)  # mix across patches
+        # 重构形状
+        y = y.view(B, L // self.patch_size, self.patch_size, C)\
+             .permute(0, 3, 1, 2).contiguous()
+        y = y.view(B, C, L)
+        return F.relu(x + y)
+
+# —— Full MobileViT1D-inspired 回归模型 —— #
+class MobileViT1DRegressor(nn.Module):
+    def __init__(self, input_dim=2, dim=32, depth=3, patch_size=25, mlp_dim=64, output_dim=1):
+        super().__init__()
+        self.stem = nn.Conv1d(input_dim, dim, kernel_size=3, padding=1)
+        self.blocks = nn.Sequential(*[
+            MobileViTBlock1D(dim, kernel_size=3, patch_size=patch_size, mlp_dim=mlp_dim)
+            for _ in range(depth)
+        ])
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(dim, output_dim)
+
+    def forward(self, x):
+        # x: [B, 2, L]
+        x = self.stem(x)          # [B, dim, L]
+        x = self.blocks(x)       # MobileViT 模块
+        x = self.pool(x).squeeze(-1)  # [B, dim]
+        return self.fc(x)        # [B, output_dim]
+
+# LSTM easy
+class LSTMRegressor(nn.Module):
+    def __init__(self, input_dim=2, hidden_dim=128, num_layers=2, output_dim=1, dropout=0.3):
+        super(LSTMRegressor, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # LSTM 输入为 (batch, seq_len, input_dim)
+        self.lstm = nn.LSTM(input_size=input_dim,
+                            hidden_size=hidden_dim,
+                            num_layers=num_layers,
+                            batch_first=True,
+                            dropout=dropout,
+                            bidirectional=False)
+
+        # 时间维度上做池化后回归
+        self.global_pool = nn.AdaptiveAvgPool1d(1)  # for (B, C, L) → (B, C, 1)
+
+        self.regressor = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(hidden_dim, output_dim)
+        )
+
+    def forward(self, x):
+        # x: (B, 2, L) → (B, L, 2)
+        x = x.permute(0, 2, 1)
+
+        # LSTM 输出 (B, L, H)
+        out, _ = self.lstm(x)
+
+        # 转为 (B, H, L) → pool → (B, H, 1)
+        out = out.permute(0, 2, 1)
+        out = self.global_pool(out)
+
+        # 回归 → (B, output_dim)
+        out = self.regressor(out)
+        return out
+    
+# LSTM hard 回归器
+class LSTMRegressor1D(nn.Module):
+    """
+    输入:  x.shape = (B, 2, L)  —— 与你的ResNet保持一致的 [batch, channels, length]
+    输出:  (B, 1) —— 单值回归 (SBP)
+    结构:  Conv1d 下采样(步长4) -> BiLSTM(2层) -> 时间维均值池化 -> MLP 回归头
+    """
+    def __init__(
+        self,
+        num_inputs: int = 2,         # 输入通道数（你的任务是2通道）
+        num_outputs: int = 1,        # 回归输出维度（SBP=1）
+        stem_channels: int = 64,     # 卷积stem输出通道数(影响参数量与效果)
+        lstm_hidden: int = 256,      # LSTM隐层维度(影响参数量与效果)
+        lstm_layers: int = 2,        # LSTM层数(>=2时才会用到dropout)
+        bidirectional: bool = True,  # 双向LSTM更稳
+        lstm_dropout: float = 0.1,   # LSTM层间dropout
+        head_hidden: int = 128,      # MLP头的中间维度
+        head_dropout: float = 0.1,   # MLP头的dropout
+        use_batchnorm_stem: bool = True,  # stem中是否使用BN
+    ):
+        super().__init__()
+
+        # ---- 1) 卷积 Stem：时域降采样，降低LSTM时序长度 ----
+        # 长度 L -> ceil(L/4), 形状: (B, num_inputs, L) -> (B, stem_channels, L/4)
+        stem = [
+            nn.Conv1d(num_inputs, stem_channels, kernel_size=5, stride=4, padding=2, bias=False),
+        ]
+        if use_batchnorm_stem:
+            stem += [nn.BatchNorm1d(stem_channels)]
+        stem += [nn.ReLU(inplace=True)]
+        self.stem = nn.Sequential(*stem)
+
+        # ---- 2) BiLSTM 主干 ----
+        self.lstm = nn.LSTM(
+            input_size=stem_channels,
+            hidden_size=lstm_hidden,
+            num_layers=lstm_layers,
+            batch_first=True,          # (B, T, C)
+            bidirectional=bidirectional,
+            dropout=(lstm_dropout if lstm_layers > 1 else 0.0),
+        )
+
+        # ---- 3) 读出头：时间维均值池化 + MLP -> 回归值 ----
+        proj_in = lstm_hidden * (2 if bidirectional else 1)
+        self.head = nn.Sequential(
+            nn.Linear(proj_in, head_hidden, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=head_dropout),
+            nn.Linear(head_hidden, num_outputs, bias=True),
+        )
+
+        self._init_weights_lstm_forget_bias()
+
+    def _init_weights_lstm_forget_bias(self):
+        # 常见的稳定训练初始化：把LSTM的forget gate偏置初始化为正值(如1.0)
+        for name, param in self.lstm.named_parameters():
+            if "weight_ih" in name:
+                nn.init.xavier_uniform_(param)
+            elif "weight_hh" in name:
+                nn.init.orthogonal_(param)
+            elif "bias" in name:
+                nn.init.constant_(param, 0.0)
+                # PyTorch LSTM门的顺序: [i, f, g, o]
+                hidden = param.shape[0] // 4
+                param.data[hidden:2*hidden] = 1.0  # forget gate偏置=1
+
+    def forward(self, x):
+        # x: (B, 2, L)
+        x = self.stem(x)             # (B, C_stem, L')
+        x = x.transpose(1, 2)        # (B, L', C_stem) 以 batch_first=True 送入LSTM
+
+        out, _ = self.lstm(x)        # (B, L', H * num_directions)
+
+        # 时间维聚合（也可尝试max/attn pool）
+        feat = out.mean(dim=1)       # (B, H * num_directions)
+
+        y = self.head(feat)          # (B, 1)
+        return y
+
+
+def build_lstm_baseline():
+    """
+    给出一个推荐配置，参数量~2-3M，速度与精度上与1D-ResNet18较接近。
+    如需更接近ResNet18_1D的参数量(更大)，可调大 stem_channels / lstm_hidden / lstm_layers。
+    """
+    return LSTMRegressor1D(
+        num_inputs=2,
+        num_outputs=1,
+        stem_channels=64,  # 48~96 区间可调
+        lstm_hidden=256,   # 192~320 区间可调
+        lstm_layers=2,     # 2~3 层
+        bidirectional=True,
+        lstm_dropout=0.1,
+        head_hidden=128,
+        head_dropout=0.1,
+        use_batchnorm_stem=True,
+    )
+
+def lstm_o3_1d():
+    return build_lstm_baseline()
+    
+def lstm1d():
+    return LSTMRegressor(input_dim=2, hidden_dim=64, num_layers=2, output_dim=1)
+
+def MobileViT1D():
+    return MobileViT1DRegressor(input_dim=2, dim=64, depth=2, patch_size=25, mlp_dim=128, output_dim=1)
+    
 def VGG16():
     return VGG(VGG_CONFIGS["VGG16"], in_channels=2, output_dim=1)
 def VGG19():
@@ -517,3 +720,10 @@ def efficientnet_b3():
 def MobileNetV3():
     return MobileNetV3_large(in_channels=2, output_dim=1)
     
+if __name__ == "__main__":
+    model = MobileViT1D()
+    inputs = torch.randn(32, 2, 1250)  # [B, C, L]
+    output = model(inputs)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(output.shape)  # [32, 1]
+    print("Trainable parameters:", n_params)

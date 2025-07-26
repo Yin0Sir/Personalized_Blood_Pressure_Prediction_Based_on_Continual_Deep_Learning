@@ -4,10 +4,8 @@ import numpy as np
 from mat73 import loadmat
 import torch.utils.data as data
 from Model_Def.Trainer import Model_Trainer
-from Model_Def.TIM import ResNet, CorNet, DDC, DDCCor, models, DC, DCCR, DDCCR_without_mse
+from Model_Def.TIM import ResNet, CorNet, DDC, DDCCor, models, DC, DCCR, DDCCR_without_mse,SwinCNN_1d
 from Model_Def.EMBC import CF_Basic_l, CF_Basic_s, CFNet, DesCor
-from Model_Def.SwinCNN_1d import Swin1d
-from Model_Def.Informer1D import Informer1D
 
 def Seed(seed): 
     torch.manual_seed(seed)
@@ -47,8 +45,8 @@ if __name__ == '__main__':
     Seed(6)
     # model = CF_Basic_s.Resnet34_1D()
     # model = DDCCR_without_mse.DDCCR_Net()
-    # model = Swin1d()
-    model = Informer1D()
+    # model = SwinCNN_1d.Swin1d()
+    model = models.lstm_o3_1d()
 
     # 设置训练设备
     device = torch.device("cuda:0" if (torch.cuda.is_available()) else "cpu")
