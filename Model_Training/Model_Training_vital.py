@@ -6,6 +6,7 @@ import torch.utils.data as data
 from Model_Def.Trainer import Model_Trainer
 from Model_Def.TIM import ResNet, CorNet, DDC, DDCCor, models, DC, DCCR, DDCCR_without_mse
 from Model_Def.EMBC import CF_Basic_l, CF_Basic_s, CFNet, DesCor
+from Model_Def.SwinCNN_1d import Swin_1D
 
 def Seed(seed): 
     torch.manual_seed(seed)
@@ -44,16 +45,19 @@ Test_Data = Build_Dataset(Test_CalBased_File, 'SBP')
 if __name__ == '__main__':
     Seed(6)
     # model = CF_Basic_s.Resnet34_1D()
-    model = DDCCR_without_mse.DDCCR_Net()
-    Seed(6)
+    # model = DDCCR_without_mse.DDCCR_Net()
+    model = Swin_1D()
+
+    # 设置训练设备
+    device = torch.device("cuda:0" if (torch.cuda.is_available()) else "cpu")
+    torch.cuda.empty_cache()
+    print(torch.cuda.get_device_name(0))
+    model.to(device)
+
     # 准备要记录的设置
     Settings = {'BP_optimizer': 'torch.optim.Adam(model.parameters(), lr=0.0001, betas=(0.9, 0.999), weight_decay=0)',
                 'trainer': 'Model_Trainer(model,torch.nn.MSELoss(),BP_optimizer,device,Settings,batch_size=32,num_epochs=100,save_states=True,save_final=True)'}
-    # 设置训练装置
-    torch.cuda.empty_cache()
-    device = torch.device("cuda:0" if (torch.cuda.is_available()) else "cpu")
-    print(torch.cuda.get_device_name(0))
-    model.to(device)
+
     # 实例化优化器和模型训练器
     BP_optimizer = eval(Settings['BP_optimizer'])
     model_trainer = eval(Settings['trainer'])
