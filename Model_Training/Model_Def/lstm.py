@@ -43,6 +43,8 @@ def lstm1d():
 
 if __name__ == "__main__":
     model = lstm1d()
-    inputs = torch.randn(16, 2, 1250)  # [B, C, L]
+    inputs = torch.randn(32, 2, 1250)  # [B, C, L]
     output = model(inputs)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(output.shape)  # [16, 1]
+    print("Trainable parameters:", n_params)
