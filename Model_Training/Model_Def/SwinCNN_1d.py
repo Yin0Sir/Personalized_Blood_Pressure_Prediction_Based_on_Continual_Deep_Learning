@@ -475,11 +475,24 @@ class Swin1dRegress(nn.Module):
         x = self.dense(x)        # → [B, output_dim]
         return x  
 
-def Swin_1D():
-    return Swin1dRegress(patch_size = 4,input_dim = 2,embed_dim = 96,depths = [2, 2, 6, 2],num_heads = [3, 6, 12, 24],window_size = 7,stochastic_depth_prob = 0.2,use_checkpoint = False)
+
+def Swin1d():
+    return Swin1dRegress(
+        patch_size=4,
+        input_dim=2,         # 双导联
+        embed_dim=32,        # 更小的初始通道数
+        depths=[2, 2, 2],    # 三个 stage，稳定易训练
+        num_heads=[2, 4, 8], # 每层 attention head 数量
+        window_size=8,       # 窗口大小，不要太小
+        output_dim=1,        # SBP/DBP/MAP
+        stochastic_depth_prob=0.1,
+        dropout=0.1,
+        attention_dropout=0.0,
+        use_checkpoint=False,
+    )
 
 if __name__ == "__main__":
-    model = Swin_1D()
+    model = Swin1d()
     input_x = torch.zeros(4, 2, 1000)
     y = model(input_x)
     print(f"swin1d_regress class output shape: {y.shape}")
