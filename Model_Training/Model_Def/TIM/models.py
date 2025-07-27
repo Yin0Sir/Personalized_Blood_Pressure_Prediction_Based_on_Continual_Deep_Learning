@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import MultiheadAttention
+
 
 # DenseNet
 class DenseLayer(torch.nn.Module):
@@ -638,44 +640,108 @@ def build_lstm_baseline():
         use_batchnorm_stem=True,
     )
 
-# lstm github example
-class LSTMRegressorSingle(nn.Module):
-    def __init__(self, input_dim=2, seq_len=1250, fc_dims=[512, 256, 128]):
+class MobileViTBlock1D2(nn.Module):
+    def __init__(self, dim, kernel_size=7, patch_size=25, mlp_ratio=4, dropout=0.1):
         super().__init__()
-        self.conv1 = nn.Conv1d(input_dim, 64, kernel_size=5, stride=1, padding=2)
-        self.relu1 = nn.ReLU(inplace=True)
-        self.lstm1 = nn.LSTM(input_size=64, hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
-        self.lstm2 = nn.LSTM(input_size=256, hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
-        self.lstm3 = nn.LSTM(input_size=256, hidden_size=64, num_layers=1, batch_first=True, bidirectional=True)
-        self.fc1 = nn.Linear(128, fc_dims[0])
-        self.fc2 = nn.Linear(fc_dims[0], fc_dims[1])
-        self.fc3 = nn.Linear(fc_dims[1], fc_dims[2])
-        self.out = nn.Linear(fc_dims[2], 1)  # 只输出1个目标
+        # 分块参数
+        self.patch_size = patch_size
+        self.dim = dim
+        
+        # 局部特征提取（深度可分离卷积）
+        self.local_conv = nn.Sequential(
+            nn.Conv1d(dim, dim, kernel_size, padding=kernel_size//2, groups=dim, bias=False),
+            nn.BatchNorm1d(dim),
+            nn.Conv1d(dim, dim, 1, bias=False),  # 逐点卷积
+            nn.BatchNorm1d(dim),
+            nn.GELU()
+        )
+        
+        # 跨块注意力
+        self.attn = MultiheadAttention(
+            embed_dim=dim * patch_size,
+            num_heads=4,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        # MLP扩展
+        self.mlp = nn.Sequential(
+            nn.Linear(dim * patch_size, dim * patch_size * mlp_ratio),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * patch_size * mlp_ratio, dim * patch_size),
+            nn.Dropout(dropout)
+        )
+        
+        # 归一化层
+        self.norm1 = nn.LayerNorm(dim * patch_size)
+        self.norm2 = nn.LayerNorm(dim * patch_size)
 
     def forward(self, x):
-        # x: [B, 2, L]
-        x = self.conv1(x)
-        x = self.relu1(x)
-        x = x.permute(0, 2, 1)  # [B, L, C] for LSTM
-        x, _ = self.lstm1(x)
-        x, _ = self.lstm2(x)
-        x, _ = self.lstm3(x)
-        x = x[:, -1, :]  # 取最后时刻特征
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = torch.relu(self.fc3(x))
-        out = self.out(x)
-        return out  # [B, 1]
+        B, C, L = x.shape
+        residual = x
+        
+        # 1. 局部特征提取
+        x = self.local_conv(x)  # [B, C, L]
+        
+        # 2. 分块处理
+        x = x.view(B, C, L // self.patch_size, self.patch_size)  # [B, C, N, P]
+        x = x.permute(0, 2, 1, 3).reshape(B, -1, C * self.patch_size)  # [B, N, C*P]
+        
+        # 3. 残差连接 + 注意力
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        
+        # 4. 残差连接 + MLP
+        x = x + self.mlp(self.norm2(x))
+        
+        # 5. 恢复形状
+        x = x.view(B, -1, C, self.patch_size).permute(0, 2, 1, 3).reshape(B, C, L)
+        return x + residual
 
-def lstm_example():
-    return LSTMRegressorSingle(input_dim=2, seq_len=1250)
+class MobileViT1D2(nn.Module):
+    def __init__(self, input_dim=2, dim=32, depth=4, patch_size=25, output_dim=1):
+        super().__init__()
+        # 输入处理
+        self.stem = nn.Sequential(
+            nn.Conv1d(input_dim, dim, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm1d(dim),
+            nn.GELU(),
+            nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+        )  # [B,2,1250] → [B,32,312]
+        
+        # MobileViT块堆叠
+        self.blocks = nn.Sequential(*[
+            MobileViTBlock1D2(
+                dim=dim,
+                kernel_size=7 if i % 2 == 0 else 3,  # 交替卷积核大小
+                patch_size=patch_size,
+                mlp_ratio=4
+            )
+            for i in range(depth)
+        ])
+        
+        # 输出头
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+            nn.Linear(dim, output_dim)
+        )
+
+    def forward(self, x):
+        # 输入形状检查
+        assert x.shape[1:] == (2, 1250), f"Expected input shape [B,2,1250], got {x.shape}"
+        
+        x = self.stem(x)      # [B,32,312]
+        x = self.blocks(x)    # [B,32,312]
+        return self.head(x)   # [B,output_dim]
+
 
 def lstm_o3_1d():
     return build_lstm_baseline()
-    
 def MobileViT1D():
     return MobileViT1DRegressor(input_dim=2, dim=64, depth=2, patch_size=25, mlp_dim=128, output_dim=1)
-    
+def MobileViT1Dnew():
+    return MobileViT1D2(input_dim=2, dim=32, depth=4, output_dim=1)
 def VGG16():
     return VGG(VGG_CONFIGS["VGG16"], in_channels=2, output_dim=1)
 def VGG19():
@@ -699,7 +765,7 @@ def MobileNetV3():
     return MobileNetV3_large(in_channels=2, output_dim=1)
     
 if __name__ == "__main__":
-    model = MobileViT1D()
+    model = MobileViT1Dnew()
     inputs = torch.randn(32, 2, 1250)  # [B, C, L]
     output = model(inputs)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
