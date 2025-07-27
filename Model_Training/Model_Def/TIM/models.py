@@ -640,13 +640,107 @@ def build_lstm_baseline():
         use_batchnorm_stem=True,
     )
 
+# class MobileViTBlock1D2(nn.Module):
+#     def __init__(self, dim, kernel_size=7, patch_size=25, mlp_ratio=4, dropout=0.1):
+#         super().__init__()
+#         # 分块参数
+#         self.patch_size = patch_size
+#         self.dim = dim
+        
+#         # 局部特征提取（深度可分离卷积）
+#         self.local_conv = nn.Sequential(
+#             nn.Conv1d(dim, dim, kernel_size, padding=kernel_size//2, groups=dim, bias=False),
+#             nn.BatchNorm1d(dim),
+#             nn.Conv1d(dim, dim, 1, bias=False),  # 逐点卷积
+#             nn.BatchNorm1d(dim),
+#             nn.GELU()
+#         )
+        
+#         # 跨块注意力
+#         self.attn = MultiheadAttention(
+#             embed_dim=dim * patch_size,
+#             num_heads=4,
+#             dropout=dropout,
+#             batch_first=True
+#         )
+        
+#         # MLP扩展
+#         self.mlp = nn.Sequential(
+#             nn.Linear(dim * patch_size, dim * patch_size * mlp_ratio),
+#             nn.GELU(),
+#             nn.Dropout(dropout),
+#             nn.Linear(dim * patch_size * mlp_ratio, dim * patch_size),
+#             nn.Dropout(dropout)
+#         )
+        
+#         # 归一化层
+#         self.norm1 = nn.LayerNorm(dim * patch_size)
+#         self.norm2 = nn.LayerNorm(dim * patch_size)
+
+#     def forward(self, x):
+#         B, C, L = x.shape
+#         residual = x
+        
+#         # 1. 局部特征提取
+#         x = self.local_conv(x)  # [B, C, L]
+        
+#         # 2. 分块处理
+#         x = x.view(B, C, L // self.patch_size, self.patch_size)  # [B, C, N, P]
+#         x = x.permute(0, 2, 1, 3).reshape(B, -1, C * self.patch_size)  # [B, N, C*P]
+        
+#         # 3. 残差连接 + 注意力
+#         x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        
+#         # 4. 残差连接 + MLP
+#         x = x + self.mlp(self.norm2(x))
+        
+#         # 5. 恢复形状
+#         x = x.view(B, -1, C, self.patch_size).permute(0, 2, 1, 3).reshape(B, C, L)
+#         return x + residual
+
+# class MobileViT1D2(nn.Module):
+#     def __init__(self, input_dim=2, dim=32, depth=4, patch_size=25, output_dim=1):
+#         super().__init__()
+#         # 输入处理
+#         self.stem = nn.Sequential(
+#             nn.Conv1d(input_dim, dim, kernel_size=7, stride=2, padding=3, bias=False),
+#             nn.BatchNorm1d(dim),
+#             nn.GELU(),
+#             nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+#         )  # [B,2,1250] → [B,32,312]
+        
+#         # MobileViT块堆叠
+#         self.blocks = nn.Sequential(*[
+#             MobileViTBlock1D2(
+#                 dim=dim,
+#                 kernel_size=7 if i % 2 == 0 else 3,  # 交替卷积核大小
+#                 patch_size=patch_size,
+#                 mlp_ratio=4
+#             )
+#             for i in range(depth)
+#         ])
+        
+#         # 输出头
+#         self.head = nn.Sequential(
+#             nn.AdaptiveAvgPool1d(1),
+#             nn.Flatten(),
+#             nn.Linear(dim, output_dim)
+#         )
+
+#     def forward(self, x):
+#         # 输入形状检查
+#         assert x.shape[1:] == (2, 1250), f"Expected input shape [B,2,1250], got {x.shape}"
+        
+#         x = self.stem(x)      # [B,32,312]
+#         x = self.blocks(x)    # [B,32,312]
+#         return self.head(x)   # [B,output_dim]
+
 class MobileViTBlock1D2(nn.Module):
     def __init__(self, dim, kernel_size=7, patch_size=25, mlp_ratio=4, dropout=0.1):
         super().__init__()
-        # 分块参数
         self.patch_size = patch_size
         self.dim = dim
-        
+
         # 局部特征提取（深度可分离卷积）
         self.local_conv = nn.Sequential(
             nn.Conv1d(dim, dim, kernel_size, padding=kernel_size//2, groups=dim, bias=False),
@@ -655,7 +749,7 @@ class MobileViTBlock1D2(nn.Module):
             nn.BatchNorm1d(dim),
             nn.GELU()
         )
-        
+
         # 跨块注意力
         self.attn = MultiheadAttention(
             embed_dim=dim * patch_size,
@@ -663,7 +757,7 @@ class MobileViTBlock1D2(nn.Module):
             dropout=dropout,
             batch_first=True
         )
-        
+
         # MLP扩展
         self.mlp = nn.Sequential(
             nn.Linear(dim * patch_size, dim * patch_size * mlp_ratio),
@@ -672,55 +766,58 @@ class MobileViTBlock1D2(nn.Module):
             nn.Linear(dim * patch_size * mlp_ratio, dim * patch_size),
             nn.Dropout(dropout)
         )
-        
-        # 归一化层
+
         self.norm1 = nn.LayerNorm(dim * patch_size)
         self.norm2 = nn.LayerNorm(dim * patch_size)
 
     def forward(self, x):
         B, C, L = x.shape
         residual = x
-        
+
+        # 补零以确保 L 可整除 patch_size
+        pad_len = (self.patch_size - (L % self.patch_size)) % self.patch_size
+        if pad_len > 0:
+            x = F.pad(x, (0, pad_len))  # pad 后 [B, C, L + pad_len]
+        padded_len = x.shape[-1]
+
         # 1. 局部特征提取
-        x = self.local_conv(x)  # [B, C, L]
-        
+        x = self.local_conv(x)  # [B, C, padded_L]
+
         # 2. 分块处理
-        x = x.view(B, C, L // self.patch_size, self.patch_size)  # [B, C, N, P]
+        x = x.view(B, C, padded_len // self.patch_size, self.patch_size)  # [B, C, N, P]
         x = x.permute(0, 2, 1, 3).reshape(B, -1, C * self.patch_size)  # [B, N, C*P]
-        
-        # 3. 残差连接 + 注意力
+
+        # 3. 注意力残差
         x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
-        
-        # 4. 残差连接 + MLP
+
+        # 4. MLP残差
         x = x + self.mlp(self.norm2(x))
-        
-        # 5. 恢复形状
-        x = x.view(B, -1, C, self.patch_size).permute(0, 2, 1, 3).reshape(B, C, L)
+
+        # 5. 恢复形状并去除 padding
+        x = x.view(B, -1, C, self.patch_size).permute(0, 2, 1, 3).reshape(B, C, padded_len)
+        x = x[:, :, :L]  # remove padding
         return x + residual
+
 
 class MobileViT1D2(nn.Module):
     def __init__(self, input_dim=2, dim=32, depth=4, patch_size=25, output_dim=1):
         super().__init__()
-        # 输入处理
         self.stem = nn.Sequential(
             nn.Conv1d(input_dim, dim, kernel_size=7, stride=2, padding=3, bias=False),
             nn.BatchNorm1d(dim),
             nn.GELU(),
             nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
-        )  # [B,2,1250] → [B,32,312]
-        
-        # MobileViT块堆叠
+        )  # 输入(2,1250) → 输出(32,312)
+
         self.blocks = nn.Sequential(*[
             MobileViTBlock1D2(
                 dim=dim,
-                kernel_size=7 if i % 2 == 0 else 3,  # 交替卷积核大小
+                kernel_size=7 if i % 2 == 0 else 3,
                 patch_size=patch_size,
                 mlp_ratio=4
-            )
-            for i in range(depth)
+            ) for i in range(depth)
         ])
-        
-        # 输出头
+
         self.head = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
@@ -728,13 +825,11 @@ class MobileViT1D2(nn.Module):
         )
 
     def forward(self, x):
-        # 输入形状检查
-        assert x.shape[1:] == (2, 1250), f"Expected input shape [B,2,1250], got {x.shape}"
-        
-        x = self.stem(x)      # [B,32,312]
-        x = self.blocks(x)    # [B,32,312]
-        return self.head(x)   # [B,output_dim]
-
+        # x: [B, 2, 1250] or any shape [B, 2, L]
+        B, C, L = x.shape
+        x = self.stem(x)     # → [B, dim, L1]
+        x = self.blocks(x)   # MobileViT Blocks
+        return self.head(x)  # → [B, output_dim]
 
 def lstm_o3_1d():
     return build_lstm_baseline()
