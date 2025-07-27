@@ -836,7 +836,7 @@ def lstm_o3_1d():
 def MobileViT1D():
     return MobileViT1DRegressor(input_dim=2, dim=64, depth=2, patch_size=25, mlp_dim=128, output_dim=1)
 def MobileViT1Dnew():
-    return MobileViT1D2(input_dim=2, dim=32, depth=4, output_dim=1)
+    return MobileViT1D2(input_dim=2, dim=32, depth=3, output_dim=1)
 def VGG16():
     return VGG(VGG_CONFIGS["VGG16"], in_channels=2, output_dim=1)
 def VGG19():
