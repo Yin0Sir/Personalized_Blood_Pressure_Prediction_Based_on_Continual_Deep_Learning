@@ -638,6 +638,38 @@ def build_lstm_baseline():
         use_batchnorm_stem=True,
     )
 
+# lstm github example
+class LSTMRegressorSingle(nn.Module):
+    def __init__(self, input_dim=2, seq_len=1250, fc_dims=[512, 256, 128]):
+        super().__init__()
+        self.conv1 = nn.Conv1d(input_dim, 64, kernel_size=5, stride=1, padding=2)
+        self.relu1 = nn.ReLU(inplace=True)
+        self.lstm1 = nn.LSTM(input_size=64, hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
+        self.lstm2 = nn.LSTM(input_size=256, hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
+        self.lstm3 = nn.LSTM(input_size=256, hidden_size=64, num_layers=1, batch_first=True, bidirectional=True)
+        self.fc1 = nn.Linear(128, fc_dims[0])
+        self.fc2 = nn.Linear(fc_dims[0], fc_dims[1])
+        self.fc3 = nn.Linear(fc_dims[1], fc_dims[2])
+        self.out = nn.Linear(fc_dims[2], 1)  # 只输出1个目标
+
+    def forward(self, x):
+        # x: [B, 2, L]
+        x = self.conv1(x)
+        x = self.relu1(x)
+        x = x.permute(0, 2, 1)  # [B, L, C] for LSTM
+        x, _ = self.lstm1(x)
+        x, _ = self.lstm2(x)
+        x, _ = self.lstm3(x)
+        x = x[:, -1, :]  # 取最后时刻特征
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = torch.relu(self.fc3(x))
+        out = self.out(x)
+        return out  # [B, 1]
+
+def lstm_example():
+    return LSTMRegressorSingle(input_dim=2, seq_len=1250)
+
 def lstm_o3_1d():
     return build_lstm_baseline()
     

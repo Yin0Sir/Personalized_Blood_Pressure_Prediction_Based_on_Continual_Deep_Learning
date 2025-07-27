@@ -56,7 +56,7 @@ if __name__ == '__main__':
 
     # 准备要记录的设置
     Settings = {'BP_optimizer': 'torch.optim.Adam(model.parameters(), lr=0.0001, betas=(0.9, 0.999), weight_decay=0)',
-                'trainer': 'Model_Trainer(model,torch.nn.MSELoss(),BP_optimizer,device,Settings,batch_size=64,num_epochs=100,save_states=True,save_final=True)'}
+                'trainer': 'Model_Trainer(model,torch.nn.MSELoss(),BP_optimizer,device,Settings,batch_size=32,num_epochs=100,save_states=True,save_final=True)'}
 
     # 实例化优化器和模型训练器
     BP_optimizer = eval(Settings['BP_optimizer'])
