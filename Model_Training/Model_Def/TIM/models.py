@@ -800,7 +800,7 @@ class MobileViTBlock1D2(nn.Module):
 
 
 class MobileViT1D2(nn.Module):
-    def __init__(self, input_dim=2, dim=32, depth=4, patch_size=25, output_dim=1):
+    def __init__(self, input_dim=2, dim=32, depth=3, patch_size=16, output_dim=1):
         super().__init__()
         self.stem = nn.Sequential(
             nn.Conv1d(input_dim, dim, kernel_size=7, stride=2, padding=3, bias=False),
