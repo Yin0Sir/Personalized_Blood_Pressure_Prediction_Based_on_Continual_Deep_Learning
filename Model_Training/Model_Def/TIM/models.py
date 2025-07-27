@@ -552,52 +552,9 @@ class MobileViT1DRegressor(nn.Module):
         x = self.blocks(x)       # MobileViT 模块
         x = self.pool(x).squeeze(-1)  # [B, dim]
         return self.fc(x)        # [B, output_dim]
-
-# LSTM easy
-class LSTMRegressor(nn.Module):
-    def __init__(self, input_dim=2, hidden_dim=128, num_layers=2, output_dim=1, dropout=0.3):
-        super(LSTMRegressor, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        
-        # LSTM 输入为 (batch, seq_len, input_dim)
-        self.lstm = nn.LSTM(input_size=input_dim,
-                            hidden_size=hidden_dim,
-                            num_layers=num_layers,
-                            batch_first=True,
-                            dropout=dropout,
-                            bidirectional=False)
-
-        # 时间维度上做池化后回归
-        self.global_pool = nn.AdaptiveAvgPool1d(1)  # for (B, C, L) → (B, C, 1)
-
-        self.regressor = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(hidden_dim, output_dim)
-        )
-
-    def forward(self, x):
-        # x: (B, 2, L) → (B, L, 2)
-        x = x.permute(0, 2, 1)
-
-        # LSTM 输出 (B, L, H)
-        out, _ = self.lstm(x)
-
-        # 转为 (B, H, L) → pool → (B, H, 1)
-        out = out.permute(0, 2, 1)
-        out = self.global_pool(out)
-
-        # 回归 → (B, output_dim)
-        out = self.regressor(out)
-        return out
     
 # LSTM hard 回归器
 class LSTMRegressor1D(nn.Module):
-    """
-    输入:  x.shape = (B, 2, L)  —— 与你的ResNet保持一致的 [batch, channels, length]
-    输出:  (B, 1) —— 单值回归 (SBP)
-    结构:  Conv1d 下采样(步长4) -> BiLSTM(2层) -> 时间维均值池化 -> MLP 回归头
-    """
     def __init__(
         self,
         num_inputs: int = 2,         # 输入通道数（你的任务是2通道）
@@ -661,27 +618,19 @@ class LSTMRegressor1D(nn.Module):
         # x: (B, 2, L)
         x = self.stem(x)             # (B, C_stem, L')
         x = x.transpose(1, 2)        # (B, L', C_stem) 以 batch_first=True 送入LSTM
-
         out, _ = self.lstm(x)        # (B, L', H * num_directions)
-
         # 时间维聚合（也可尝试max/attn pool）
         feat = out.mean(dim=1)       # (B, H * num_directions)
-
         y = self.head(feat)          # (B, 1)
         return y
 
-
 def build_lstm_baseline():
-    """
-    给出一个推荐配置，参数量~2-3M，速度与精度上与1D-ResNet18较接近。
-    如需更接近ResNet18_1D的参数量(更大)，可调大 stem_channels / lstm_hidden / lstm_layers。
-    """
     return LSTMRegressor1D(
         num_inputs=2,
         num_outputs=1,
         stem_channels=64,  # 48~96 区间可调
-        lstm_hidden=256,   # 192~320 区间可调
-        lstm_layers=2,     # 2~3 层
+        lstm_hidden=320,   # 192~320 区间可调
+        lstm_layers=3,     # 2~3 层
         bidirectional=True,
         lstm_dropout=0.1,
         head_hidden=128,
@@ -692,9 +641,6 @@ def build_lstm_baseline():
 def lstm_o3_1d():
     return build_lstm_baseline()
     
-def lstm1d():
-    return LSTMRegressor(input_dim=2, hidden_dim=64, num_layers=2, output_dim=1)
-
 def MobileViT1D():
     return MobileViT1DRegressor(input_dim=2, dim=64, depth=2, patch_size=25, mlp_dim=128, output_dim=1)
     
