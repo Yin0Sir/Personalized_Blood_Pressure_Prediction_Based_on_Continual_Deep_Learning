@@ -640,6 +640,7 @@ def build_lstm_baseline():
         use_batchnorm_stem=True,
     )
 
+<<<<<<< HEAD
 class MobileViTBlock1D2(nn.Module):
     def __init__(self, dim, kernel_size=7, patch_size=25, mlp_ratio=4, dropout=0.1):
         super().__init__()
@@ -736,12 +737,17 @@ class MobileViT1D2(nn.Module):
         return self.head(x)   # [B,output_dim]
 
 
+=======
+>>>>>>> 0c12dbdc261098befcbbd2920fed5317c4be4ba2
 def lstm_o3_1d():
     return build_lstm_baseline()
 def MobileViT1D():
     return MobileViT1DRegressor(input_dim=2, dim=64, depth=2, patch_size=25, mlp_dim=128, output_dim=1)
+<<<<<<< HEAD
 def MobileViT1Dnew():
     return MobileViT1D2(input_dim=2, dim=32, depth=4, output_dim=1)
+=======
+>>>>>>> 0c12dbdc261098befcbbd2920fed5317c4be4ba2
 def VGG16():
     return VGG(VGG_CONFIGS["VGG16"], in_channels=2, output_dim=1)
 def VGG19():
@@ -763,7 +769,7 @@ def efficientnet_b3():
 #     return EfficientNet(width_coefficient=1.4, depth_coefficient=1.8, dropout_rate=0.4, in_channels=2, output_dim=1)
 def MobileNetV3():
     return MobileNetV3_large(in_channels=2, output_dim=1)
-    
+
 if __name__ == "__main__":
     model = MobileViT1Dnew()
     inputs = torch.randn(32, 2, 1250)  # [B, C, L]
