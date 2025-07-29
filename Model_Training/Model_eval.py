@@ -4,7 +4,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from mat73 import loadmat
-from Model_Def import ResNet, CorNet, DDC, DDCCor, models, DC, DCCR
+from Model_Def.TIM import ResNet, CorNet, DDC, DDCCor, models, DC, DCCR, DDCCR_without_mse,SwinCNN_1d
+from Model_Def.EMBC import CF_Basic_l, CF_Basic_s, CFNet, DesCor
 
 def Seed(seed): 
     torch.manual_seed(seed)
@@ -311,6 +312,6 @@ def Evaluate_Model(path, target):
 
 if __name__ == '__main__':
     Seed(6)
-    Evaluate_Model('PTH/121517/trained_model.pth', 'SBP')
-    # Evaluate_Model('PTH/233948/trained_model.pth', 'DBP')
+    # Evaluate_Model('PTH/134858/trained_model.pth', 'SBP')
+    Evaluate_Model('PTH/210655/trained_model.pth', 'DBP')
     # Evaluate_Model_checkpoint('PTH/122040/checkpoint_epoch_75.pth', 'SBP')
