@@ -37,7 +37,7 @@ def compute_saliency_map(model, input_tensor, target_value):
     return saliency
 
 def plot_saliency(signal, saliency, save_path="saliency_map.png"):
-    ecg, ppg = signal
+    ppg, ecg = signal
     ecg_sal, ppg_sal = saliency
     L = len(ecg)
     t = np.linspace(0, 10, L)
@@ -138,26 +138,6 @@ def plot_occlusion(positions, errors, L, save_path="occlusion_sensitivity.png"):
     plt.tight_layout()
     plt.savefig(save_path, dpi=400)
 
-def plot_saliency_fft(signal, saliency, save_path="saliency_fft.png"):
-    ecg, ppg = signal
-    ecg_sal, ppg_sal = saliency
-    fs = len(ecg) / 10
-    freqs = np.fft.rfftfreq(len(ecg), d=1/fs)
-    ecg_power = np.abs(np.fft.rfft(ecg_sal))**2
-    ppg_power = np.abs(np.fft.rfft(ppg_sal))**2
-    ecg_power /= ecg_power.max()
-    ppg_power /= ppg_power.max()
-    plt.figure(figsize=(10, 3))
-    plt.plot(freqs, ecg_power, label='ECG Saliency Spectrum', color='blue')
-    plt.plot(freqs, ppg_power, label='PPG Saliency Spectrum', color='green')
-    plt.xlim([0, 10])
-    plt.xlabel("Frequency (Hz)")
-    plt.ylabel("Normalized Power")
-    plt.title("Saliency Frequency Distribution")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=400)
-
 def approx_shap_segments(model, input_tensor, label_tensor, n_segments=20):
     model.eval()
     input_tensor = input_tensor.clone()
@@ -193,7 +173,6 @@ def run_all(model_path, sample_path):
     # Saliency
     saliency = compute_saliency_map(model, input_tensor.clone(), label_tensor)
     plot_saliency(raw_signal, saliency)
-    # plot_saliency_fft(raw_signal, saliency)
 
     # Grad-CAM
     compute_gradcam(model, input_tensor.clone(), label_tensor)
@@ -205,10 +184,6 @@ def run_all(model_path, sample_path):
     # Occlusion
     pos, err = compute_occlusion_sensitivity(model, input_tensor.clone(), label_tensor)
     plot_occlusion(pos, err, raw_signal.shape[1])
-
-    # SHAP
-    # shap_values = approx_shap_segments(model, input_tensor.clone(), label_tensor)
-    # plot_shap_bar(shap_values)
 
     print("✅ All interpretability visualizations generated.")
 
