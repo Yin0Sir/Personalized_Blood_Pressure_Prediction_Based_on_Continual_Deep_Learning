@@ -4,8 +4,7 @@ import numpy as np
 from mat73 import loadmat
 import torch.utils.data as data
 from Model_Def.Trainer import Model_Trainer
-from Model_Def.TIM import ResNet, CorNet, DDC, DDCCor, models, DC, DCCR, DDCCR_without_mse,SwinCNN_1d
-from Model_Def.EMBC import CF_Basic_l, CF_Basic_s, CFNet, DesCor
+from Model_Def import ResNet, DDCCor
 
 def Seed(seed): 
     torch.manual_seed(seed)
