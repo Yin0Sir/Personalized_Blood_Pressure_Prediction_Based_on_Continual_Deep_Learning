@@ -4,8 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from mat73 import loadmat
-from Model_Def.TIM import ResNet, CorNet, DDC, DDCCor, models, DC, DCCR, DDCCR_without_mse,SwinCNN_1d
-from Model_Def.EMBC import CF_Basic_l, CF_Basic_s, CFNet, DesCor
+from Model_Def import ResNet, DDCCor
 
 def Seed(seed): 
     torch.manual_seed(seed)
@@ -60,7 +59,7 @@ def Evaluate_Model_checkpoint(checkpoint_path, target):
     checkpoint = torch.load(checkpoint_path)
     
     # 恢复模型状态
-    model = models.VGG16()
+    model = DDCCor.DDCCR_Net()
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 

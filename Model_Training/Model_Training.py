@@ -42,10 +42,7 @@ Test_Data = Build_Dataset(Test_CalBased_File, 'SBP')
 
 if __name__ == '__main__':
     Seed(6)
-    # model = CF_Basic_s.Resnet34_1D()
-    # model = DDCCR_without_mse.DDCCR_Net()
-    # model = SwinCNN_1d.Swin1d()
-    model = models.lstm()
+    model = DDCCor.DDCCor_Net()
 
     # 设置训练设备
     device = torch.device("cuda:0" if (torch.cuda.is_available()) else "cpu")
