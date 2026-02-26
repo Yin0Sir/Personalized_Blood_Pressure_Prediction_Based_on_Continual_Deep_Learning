@@ -4,7 +4,7 @@ import numpy as np
 from mat73 import loadmat
 import torch.utils.data as data
 from Model_Def.Trainer import Model_Trainer
-from Model_Def import ResNet, DDCCor
+from Model_Def import DDCCor
 
 def Seed(seed): 
     torch.manual_seed(seed)
