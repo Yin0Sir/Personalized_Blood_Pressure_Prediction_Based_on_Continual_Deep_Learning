@@ -1,8 +1,6 @@
 from torchinfo import summary
 import torch
-from Model_Training.Model_Def.TIM import ResNet, CorNet, DDCCor, models, DC, DCCR
-from Model_Training.Model_Def.old_module import eaa
-from Model_Training.Model_Def.EMBC import DesCor, CFNet, CF_Basic_l, CF_Basic_s
+from Model_Training.Model_Def import DDCCor
 from ptflops import get_model_complexity_info
 
 # 定义测试函数
