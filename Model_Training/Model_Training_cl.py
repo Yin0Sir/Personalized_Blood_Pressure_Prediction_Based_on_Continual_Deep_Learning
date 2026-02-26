@@ -41,31 +41,6 @@ Train_Data4 = Build_Dataset(Train_File4, 'SBP')
 Test_Data = Build_Dataset(Test_File, 'SBP')
 
 if __name__ == '__main__':
-    ## 直接训练
-    # Seed(6) 
-    # model = CF_Basic_s.Resnet34_1D()
-    # Settings = {'BP_optimizer': 'torch.optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), weight_decay=0)',
-    #             'trainer': 'Model_Trainer(model,torch.nn.MSELoss(),BP_optimizer,device,Settings,batch_size=32,num_epochs=40,save_states=True,save_final=True)'}
-
-    # torch.cuda.empty_cache()
-    # device = torch.device("cuda:0" if (torch.cuda.is_available()) else "cpu")
-    # print(torch.cuda.get_device_name(0))
-    # model.to(device)
-    # # 实例化优化器和模型训练器
-    # BP_optimizer = eval(Settings['BP_optimizer'])
-    # model_trainer = eval(Settings['trainer'])
-
-    # # 构造阶段数据列表
-    # stage_trainsets = [Train_Data1, Train_Data2, Train_Data3, Train_Data4]
-    # stage_testsets = [
-    # {"Test_Data": Test_Data},
-    # {"Test_Data": Test_Data},
-    # {"Test_Data": Test_Data},
-    # {"Test_Data": Test_Data}]
-
-    # # 调用多阶段训练方法
-    # model_trainer.Train_Model_MultiStage(stage_trainsets, stage_testsets)
-
     ## 继续训练
     Seed(6)
     torch.cuda.empty_cache()
@@ -96,11 +71,7 @@ if __name__ == '__main__':
 
     # 构造阶段数据列表
     stage_trainsets = [Train_Data1, Train_Data2, Train_Data3, Train_Data4]
-    stage_testsets = [
-    {"Test_Data": Test_Data},
-    {"Test_Data": Test_Data},
-    {"Test_Data": Test_Data},
-    {"Test_Data": Test_Data}]
+    stage_testsets = [{"Test_Data": Test_Data}, {"Test_Data": Test_Data}, {"Test_Data": Test_Data}, {"Test_Data": Test_Data}]
 
     # 调用多阶段训练方法
     model_trainer.Train_Model_MultiStage(stage_trainsets, stage_testsets)
