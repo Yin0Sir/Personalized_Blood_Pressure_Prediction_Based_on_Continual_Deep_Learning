@@ -4,7 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from mat73 import loadmat
-from Model_Def import ResNet, DDCCor
+from Model_Def import DDCCor
 
 def Seed(seed): 
     torch.manual_seed(seed)

@@ -258,3 +258,159 @@ class Model_Trainer:
                     }, os.path.join(foldername, 'checkpoint_epoch_{}.pth'.format(epoch)))
         if savemodel:
             torch.save(self.Model_Running, os.path.join(foldername, 'trained_model.pth'))
+
+    # ---------------------------------------------------------
+    # 针对 DataLoader 维度的整体评估 (复用你原有的指标计算)
+    # ---------------------------------------------------------
+    def Evaluate_Loader(self, loader):
+        self.Model_Running.eval()
+        all_preds, all_labels = [], []
+        with torch.no_grad():
+            for inputs, labels in loader:
+                inputs = inputs.float().to(self.Device)
+                preds = self.Model_Running(inputs)
+                all_preds.append(preds.cpu().detach().numpy())
+                all_labels.append(labels.numpy())
+                
+        all_preds = np.concatenate(all_preds, axis=0)
+        all_labels = np.concatenate(all_labels, axis=0)
+        
+        # 计算各种指标
+        loss = self.BP_Loss_Fun(torch.from_numpy(all_preds), torch.from_numpy(all_labels)).item()
+        r2 = R2(all_labels, all_preds)
+        me = ME(all_labels, all_preds)
+        sd = SD(all_labels, all_preds)
+        rmse = RMSE(all_labels, all_preds)
+        mae = MAE(all_labels, all_preds)
+        return loss, r2, me, sd, rmse, mae
+
+    # ---------------------------------------------------------
+    # 持续学习/EWC 主训练范式
+    # ---------------------------------------------------------
+    def Train_CL_Model(self, user_id, batch_loaders, test_loader, mode='seq_ewc', lambda_ewc=1e-3, head_keywords=["final_fc"]):
+        TimeID = datetime.now().strftime('%Y_%m%d_%H%M%S')
+        ModelID = f"U{user_id}_{mode}_{TimeID[-4:]}"
+        
+        # 复用你的 TensorBoard 写入器
+        Writer = SW(os.path.join('Model_Training/TensorBoard/CL_Experiments', TimeID + f"_{mode}"))
+        print(f'\n--- CL Session | User: {user_id} | Mode: {mode} ---')
+        
+        result_dict = {'user_id': user_id, 'mode': mode}
+        
+        # 如果是全局评估模式，直接测 Test 集就返回
+        if mode == 'global_eval':
+            loss, r2, me, sd, rmse, mae = self.Evaluate_Loader(test_loader)
+            result_dict.update({'test_mae': mae, 'test_rmse': rmse, 'test_r2': r2})
+            print(f"Global Eval -> MAE: {mae:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}")
+            return result_dict
+
+        # 初始化 EWC
+        filter_fn = lambda name: any(kw in name for kw in head_keywords)
+        ewc = EWCRegularizer(self.Model_Running, filter_fn, self.Device)
+        err_b1_history = []
+        global_step = 1
+        
+        # 按时间批次顺序训练
+        for k, loader in enumerate(batch_loaders):
+            print(f'Training CL Batch {k+1}/{len(batch_loaders)} ...')
+            for Epoch in range(1, self.Num_Epoch + 1):  # 此时 Num_Epoch 视作 epochs_per_batch
+                self.Model_Running.train()
+                
+                # 复用你的进度条风格
+                with PB.ProgressBar(widgets=widgets, max_value=len(loader)) as bar:
+                    for i, (inputs, labels) in enumerate(loader):
+                        inputs, labels = inputs.float().to(self.Device), labels.float().to(self.Device)
+                        
+                        self.Optimizer_BP.zero_grad()
+                        outputs = self.Model_Running(inputs)
+                        loss = self.BP_Loss_Fun(outputs, labels)
+                        
+                        # 施加 EWC 惩罚 (从第2个Batch开始)
+                        if mode == 'seq_ewc' and k > 0:
+                            loss += lambda_ewc * ewc.ewc_loss()
+                            
+                        loss.backward()
+                        self.Optimizer_BP.step()
+                        
+                        # 打点到 TensorBoard
+                        if not global_step % 5:
+                            Writer.add_scalar(f'CL_Loss/Batch_{k+1}', loss.item(), global_step)
+                        global_step += 1
+                        bar.update(i, Batch_BP_Loss=loss.item())
+                        
+            # 每个 Batch 结束后，评估在 Batch 1 的遗忘情况
+            _, _, _, _, _, b1_mae = self.Evaluate_Loader(batch_loaders[0])
+            err_b1_history.append(b1_mae)
+            
+            # 保存快照，估计 Fisher
+            if mode == 'seq_ewc':
+                ewc.consolidate()
+                ewc.estimate_fisher(loader, self.BP_Loss_Fun)
+                
+        # 最终评估 Test 集
+        _, test_r2, test_me, test_sd, test_rmse, test_mae = self.Evaluate_Loader(test_loader)
+        result_dict.update({'test_mae': test_mae, 'test_rmse': test_rmse, 'test_r2': test_r2})
+        
+        # 计算遗忘度 (Forget = 最新评估误差 - 首次评估误差)
+        result_dict['forget'] = err_b1_history[-1] - err_b1_history[0]
+        
+        print(f"Finished {mode} -> Test MAE: {test_mae:.4f}, Forget: {result_dict['forget']:.4f}")
+        Writer.close()
+        
+        # 视情况保存最终微调模型
+        if self.Save_Final:
+            self.Save_Checkpoint(ModelID, TimeID, Epoch, global_step, global_step, savemodel=True)
+            
+        return result_dict
+
+# 持续学习 EWC 正则化器
+class EWCRegularizer:
+    def __init__(self, model, param_filter_fn, device='cuda'):
+        self.model = model
+        self.param_filter_fn = param_filter_fn
+        self.device = device
+        self.theta_star = {}
+        self.fisher = {}
+
+    def consolidate(self):
+        """保存当前模型参数的快照"""
+        self.theta_star = {}
+        for name, param in self.model.named_parameters():
+            if self.param_filter_fn(name) and param.requires_grad:
+                self.theta_star[name] = param.data.clone().detach()
+
+    def estimate_fisher(self, dataloader, loss_fn, max_batches=50):
+        """估计 Fisher 信息矩阵"""
+        self.fisher = {}
+        for name, param in self.model.named_parameters():
+            if self.param_filter_fn(name) and param.requires_grad:
+                self.fisher[name] = torch.zeros_like(param.data).to(self.device)
+
+        self.model.train()
+        batch_count = 0
+        for inputs, targets in dataloader:
+            if batch_count >= max_batches: break
+            inputs, targets = inputs.float().to(self.device), targets.float().to(self.device)
+            self.model.zero_grad()
+            outputs = self.model(inputs)
+            loss = loss_fn(outputs, targets)
+            loss.backward()
+            
+            for name, param in self.model.named_parameters():
+                if self.param_filter_fn(name) and param.requires_grad:
+                    if param.grad is not None:
+                        self.fisher[name] += param.grad.data ** 2
+            batch_count += 1
+            
+        for name in self.fisher:
+            self.fisher[name] /= float(batch_count if batch_count > 0 else 1)
+        self.model.zero_grad()
+
+    def ewc_loss(self):
+        """计算 EWC 正则化损失"""
+        loss = 0.0
+        for name, param in self.model.named_parameters():
+            if self.param_filter_fn(name) and param.requires_grad:
+                if name in self.fisher and name in self.theta_star:
+                    loss += torch.sum(self.fisher[name] * (param - self.theta_star[name]) ** 2)
+        return loss
