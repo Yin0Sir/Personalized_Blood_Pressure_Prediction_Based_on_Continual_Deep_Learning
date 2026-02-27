@@ -259,9 +259,7 @@ class Model_Trainer:
         if savemodel:
             torch.save(self.Model_Running, os.path.join(foldername, 'trained_model.pth'))
 
-    # ---------------------------------------------------------
     # 针对 DataLoader 维度的整体评估 (复用你原有的指标计算)
-    # ---------------------------------------------------------
     def Evaluate_Loader(self, loader):
         self.Model_Running.eval()
         all_preds, all_labels = [], []
@@ -284,83 +282,192 @@ class Model_Trainer:
         mae = MAE(all_labels, all_preds)
         return loss, r2, me, sd, rmse, mae
 
-    # ---------------------------------------------------------
     # 持续学习/EWC 主训练范式
-    # ---------------------------------------------------------
-    def Train_CL_Model(self, user_id, batch_loaders, test_loader, mode='seq_ewc', lambda_ewc=1e-3, head_keywords=["final_fc"]):
+    # def Train_CL_Model(self, user_id, batch_loaders, test_loader, mode='seq_ewc', lambda_ewc=1e-3, head_keywords=["final_fc"]):
+    #     TimeID = datetime.now().strftime('%Y_%m%d_%H%M%S')
+    #     ModelID = f"U{user_id}_{mode}_{TimeID[-4:]}"
+        
+    #     # 复用你的 TensorBoard 写入器
+    #     Writer = SW(os.path.join('Model_Training/TensorBoard/CL_Experiments', TimeID + f"_{mode}"))
+    #     print(f'\n--- CL Session | User: {user_id} | Mode: {mode} ---')
+        
+    #     result_dict = {'user_id': user_id, 'mode': mode}
+        
+    #     # 如果是全局评估模式，直接测 Test 集就返回
+    #     if mode == 'global_eval':
+    #         loss, r2, me, sd, rmse, mae = self.Evaluate_Loader(test_loader)
+    #         result_dict.update({'test_mae': mae, 'test_rmse': rmse, 'test_r2': r2})
+    #         print(f"Global Eval -> MAE: {mae:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}")
+    #         return result_dict
+
+    #     # 初始化 EWC
+    #     filter_fn = lambda name: any(kw in name for kw in head_keywords)
+    #     ewc = EWCRegularizer(self.Model_Running, filter_fn, self.Device)
+    #     err_b1_history = []
+    #     global_step = 1
+        
+    #     # 按时间批次顺序训练
+    #     for k, loader in enumerate(batch_loaders):
+    #         print(f'Training CL Batch {k+1}/{len(batch_loaders)} ...')
+    #         for Epoch in range(1, self.Num_Epoch + 1):  # 此时 Num_Epoch 视作 epochs_per_batch
+    #             self.Model_Running.train()
+                
+    #             # 复用你的进度条风格
+    #             with PB.ProgressBar(widgets=widgets, max_value=len(loader)) as bar:
+    #                 for i, (inputs, labels) in enumerate(loader):
+    #                     inputs, labels = inputs.float().to(self.Device), labels.float().to(self.Device)
+                        
+    #                     self.Optimizer_BP.zero_grad()
+    #                     outputs = self.Model_Running(inputs)
+    #                     loss = self.BP_Loss_Fun(outputs, labels)
+                        
+    #                     # 施加 EWC 惩罚 (从第2个Batch开始)
+    #                     if mode == 'seq_ewc' and k > 0:
+    #                         loss += lambda_ewc * ewc.ewc_loss()
+                            
+    #                     loss.backward()
+    #                     self.Optimizer_BP.step()
+                        
+    #                     # 打点到 TensorBoard
+    #                     if not global_step % 5:
+    #                         Writer.add_scalar(f'CL_Loss/Batch_{k+1}', loss.item(), global_step)
+    #                     global_step += 1
+    #                     bar.update(i, Batch_BP_Loss=loss.item())
+                        
+    #         # 每个 Batch 结束后，评估在 Batch 1 的遗忘情况
+    #         _, _, _, _, _, b1_mae = self.Evaluate_Loader(batch_loaders[0])
+    #         err_b1_history.append(b1_mae)
+            
+    #         # 保存快照，估计 Fisher
+    #         if mode == 'seq_ewc':
+    #             ewc.consolidate()
+    #             ewc.estimate_fisher(loader, self.BP_Loss_Fun)
+                
+    #     # 最终评估 Test 集
+    #     _, test_r2, test_me, test_sd, test_rmse, test_mae = self.Evaluate_Loader(test_loader)
+    #     result_dict.update({'test_mae': test_mae, 'test_rmse': test_rmse, 'test_r2': test_r2})
+        
+    #     # 计算遗忘度 (Forget = 最新评估误差 - 首次评估误差)
+    #     result_dict['forget'] = err_b1_history[-1] - err_b1_history[0]
+        
+    #     print(f"Finished {mode} -> Test MAE: {test_mae:.4f}, Forget: {result_dict['forget']:.4f}")
+    #     Writer.close()
+        
+    #     # 视情况保存最终微调模型
+    #     if self.Save_Final:
+    #         self.Save_Checkpoint(ModelID, TimeID, Epoch, global_step, global_step, savemodel=True)
+            
+    #     return result_dict
+    
+    def Train_CL_Model(
+        self,
+        user_id,
+        batch_loaders,
+        test_loader,
+        mode='seq_ewc',
+        lambda_ewc=1e-3,
+        head_keywords=["final_fc"],
+        verbose=0,            # 0: 不打印; 1: 仅打印开始/结束; 2: 打印每个CL batch摘要
+        show_progress=False,  # True 才显示 progressbar
+    ):
         TimeID = datetime.now().strftime('%Y_%m%d_%H%M%S')
-        ModelID = f"U{user_id}_{mode}_{TimeID[-4:]}"
-        
-        # 复用你的 TensorBoard 写入器
+
+        # TensorBoard 仍然保留（不影响控制台）
         Writer = SW(os.path.join('Model_Training/TensorBoard/CL_Experiments', TimeID + f"_{mode}"))
-        print(f'\n--- CL Session | User: {user_id} | Mode: {mode} ---')
-        
+
+        if verbose >= 1:
+            print(f"[{user_id}] {mode} ...")
+
         result_dict = {'user_id': user_id, 'mode': mode}
-        
-        # 如果是全局评估模式，直接测 Test 集就返回
+
+        # 1) global_eval：只评估一次
         if mode == 'global_eval':
-            loss, r2, me, sd, rmse, mae = self.Evaluate_Loader(test_loader)
+            _, r2, _, _, rmse, mae = self.Evaluate_Loader(test_loader)
             result_dict.update({'test_mae': mae, 'test_rmse': rmse, 'test_r2': r2})
-            print(f"Global Eval -> MAE: {mae:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}")
+            if verbose >= 1:
+                print(f"[{user_id}] {mode} done | MAE {mae:.4f} RMSE {rmse:.4f} R2 {r2:.4f}")
+            Writer.close()
             return result_dict
 
-        # 初始化 EWC
+        # 2) seq_ft / seq_ewc：顺序训练
         filter_fn = lambda name: any(kw in name for kw in head_keywords)
         ewc = EWCRegularizer(self.Model_Running, filter_fn, self.Device)
         err_b1_history = []
         global_step = 1
-        
-        # 按时间批次顺序训练
+
         for k, loader in enumerate(batch_loaders):
-            print(f'Training CL Batch {k+1}/{len(batch_loaders)} ...')
-            for Epoch in range(1, self.Num_Epoch + 1):  # 此时 Num_Epoch 视作 epochs_per_batch
+            # 统计该 CL batch 的平均训练 loss（不刷进度条）
+            batch_losses = []
+
+            for Epoch in range(1, self.Num_Epoch + 1):  # Num_Epoch 视作 epochs_per_batch
                 self.Model_Running.train()
-                
-                # 复用你的进度条风格
-                with PB.ProgressBar(widgets=widgets, max_value=len(loader)) as bar:
-                    for i, (inputs, labels) in enumerate(loader):
+
+                if show_progress:
+                    with PB.ProgressBar(widgets=widgets, max_value=len(loader)) as bar:
+                        for i, (inputs, labels) in enumerate(loader):
+                            inputs, labels = inputs.float().to(self.Device), labels.float().to(self.Device)
+
+                            self.Optimizer_BP.zero_grad()
+                            outputs = self.Model_Running(inputs)
+                            loss = self.BP_Loss_Fun(outputs, labels)
+
+                            if mode == 'seq_ewc' and k > 0:
+                                loss += lambda_ewc * ewc.ewc_loss()
+
+                            loss.backward()
+                            self.Optimizer_BP.step()
+
+                            batch_losses.append(loss.item())
+
+                            if not global_step % 5:
+                                Writer.add_scalar(f'CL_Loss/Batch_{k+1}', loss.item(), global_step)
+                            global_step += 1
+
+                            bar.update(i, Batch_BP_Loss=loss.item())
+                else:
+                    for (inputs, labels) in loader:
                         inputs, labels = inputs.float().to(self.Device), labels.float().to(self.Device)
-                        
+
                         self.Optimizer_BP.zero_grad()
                         outputs = self.Model_Running(inputs)
                         loss = self.BP_Loss_Fun(outputs, labels)
-                        
-                        # 施加 EWC 惩罚 (从第2个Batch开始)
+
                         if mode == 'seq_ewc' and k > 0:
                             loss += lambda_ewc * ewc.ewc_loss()
-                            
+
                         loss.backward()
                         self.Optimizer_BP.step()
-                        
-                        # 打点到 TensorBoard
+
+                        batch_losses.append(loss.item())
+
                         if not global_step % 5:
                             Writer.add_scalar(f'CL_Loss/Batch_{k+1}', loss.item(), global_step)
                         global_step += 1
-                        bar.update(i, Batch_BP_Loss=loss.item())
-                        
-            # 每个 Batch 结束后，评估在 Batch 1 的遗忘情况
+
+            # 每个 CL batch 结束：评估 batch1 MAE 作为遗忘监控
             _, _, _, _, _, b1_mae = self.Evaluate_Loader(batch_loaders[0])
             err_b1_history.append(b1_mae)
-            
-            # 保存快照，估计 Fisher
+
+            # EWC：每段后更新快照+Fisher
             if mode == 'seq_ewc':
                 ewc.consolidate()
                 ewc.estimate_fisher(loader, self.BP_Loss_Fun)
-                
-        # 最终评估 Test 集
-        _, test_r2, test_me, test_sd, test_rmse, test_mae = self.Evaluate_Loader(test_loader)
+
+            if verbose >= 2:
+                avg_loss = float(np.mean(batch_losses)) if len(batch_losses) else 0.0
+                print(f"  - CL batch {k+1}/{len(batch_loaders)} | avg_loss {avg_loss:.3f} | b1_mae {b1_mae:.3f}")
+
+        # 3) 最终 test 评估
+        _, test_r2, _, _, test_rmse, test_mae = self.Evaluate_Loader(test_loader)
         result_dict.update({'test_mae': test_mae, 'test_rmse': test_rmse, 'test_r2': test_r2})
-        
-        # 计算遗忘度 (Forget = 最新评估误差 - 首次评估误差)
-        result_dict['forget'] = err_b1_history[-1] - err_b1_history[0]
-        
-        print(f"Finished {mode} -> Test MAE: {test_mae:.4f}, Forget: {result_dict['forget']:.4f}")
+
+        # 遗忘度：最后一次b1_mae - 第一次b1_mae
+        result_dict['forget'] = (err_b1_history[-1] - err_b1_history[0]) if len(err_b1_history) >= 2 else 0.0
+
+        if verbose >= 1:
+            print(f"[{user_id}] {mode} done | MAE {test_mae:.4f} | Forget {result_dict['forget']:.4f}")
+
         Writer.close()
-        
-        # 视情况保存最终微调模型
-        if self.Save_Final:
-            self.Save_Checkpoint(ModelID, TimeID, Epoch, global_step, global_step, savemodel=True)
-            
         return result_dict
 
 # 持续学习 EWC 正则化器

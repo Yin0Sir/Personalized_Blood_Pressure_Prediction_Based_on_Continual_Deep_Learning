@@ -6,8 +6,11 @@ import pandas as pd
 import json
 import os
 import math
+import copy
 from mat73 import loadmat
 from Model_Def.Trainer import Model_Trainer
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, message=r".*torch\.load.*weights_only=False.*")
 
 def Seed(seed): 
     torch.manual_seed(seed)
@@ -110,9 +113,10 @@ if __name__ == '__main__':
     
     # 2. 批量跑实验
     for u_idx, user_id in enumerate(selected_users):
-        print(f"\n{'='*50}\n[{u_idx+1}/{len(selected_users)}] Processing User: {user_id}\n{'='*50}")
+        if u_idx == 0:
+            print("\nidx | user_id | G_MAE | FT_MAE | EWC_MAE | gain(EWC) | forget(EWC)")
+        print(f"[{u_idx+1}/{len(selected_users)}] Processing User: {user_id}")
         idx_sorted = user2idx_sorted[user_id]
-        
         train_idx, _, test_idx = split_user_stream(idx_sorted)
         batch_idx_list = split_train_to_batches(train_idx, K=3)
         
@@ -121,35 +125,49 @@ if __name__ == '__main__':
         
         user_res = {'user_id': user_id}
         
+        # 每个用户只load一次（放在 for mode 之前）
+        base_model = torch.load(pretrained_model_path, map_location="cpu")
+        base_state = {k: v.clone() for k, v in base_model.state_dict().items()}  # 干净权重快照
+
         for mode in modes:
-            # 每次模式开始前，重新加载干净的全局模型！
-            model = torch.load(pretrained_model_path, map_location=device)
-            model.to(device)
-            
-            # 冻结参数范式
-            for param in model.parameters(): param.requires_grad = False
+            # 用 deepcopy 保留结构，再用 state_dict 保证权重是“全局初始态”
+            model = copy.deepcopy(base_model).to(device)
+            model.load_state_dict(base_state, strict=True)
+
+            # 冻结/解冻
+            for param in model.parameters():
+                param.requires_grad = False
             for name, param in model.named_parameters():
                 if any(layer in name for layer in layers_to_unfreeze):
                     param.requires_grad = True
 
-            # 完美复用你的 Settings 字符串执行范式
             Settings = {
                 'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3, betas=(0.9, 0.999), weight_decay=0)",
-                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=32, num_epochs=5, save_states=False, save_final=False)" # 这里的 num_epochs 等同于 epochs_per_batch
+                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=32, num_epochs=5, save_states=False, save_final=False)"
             }
-            
             BP_optimizer = eval(Settings['BP_optimizer'])
             model_trainer = eval(Settings['trainer'])
-            
-            # 触发新写的范式
-            res = model_trainer.Train_CL_Model(user_id, batch_loaders, test_loader, mode=mode, lambda_ewc=1e-3, head_keywords=layers_to_unfreeze)
-            
+
+            # 触发新写的范式 ✅ 关键：静默训练（不刷屏）
+            res = model_trainer.Train_CL_Model(
+                user_id, batch_loaders, test_loader,
+                mode=mode, lambda_ewc=1e-3, head_keywords=layers_to_unfreeze,
+                verbose=0, show_progress=False
+            )
             # 收录该模式结果
             for k, v in res.items():
-                if k not in ['user_id', 'mode']: user_res[f"{mode}_{k}"] = v
+                if k not in ['user_id', 'mode']:
+                    user_res[f"{mode}_{k}"] = v
                 
         # 计算增益 (Gain)
         user_res['gain'] = user_res['global_eval_test_mae'] - user_res['seq_ewc_test_mae']
+        g = user_res.get('global_eval_test_mae', float('nan'))
+        ft = user_res.get('seq_ft_test_mae', float('nan'))
+        ewc = user_res.get('seq_ewc_test_mae', float('nan'))
+        forget = user_res.get('seq_ewc_forget', float('nan'))
+        gain = g - ewc
+        print(f"{u_idx+1:>3d} | {user_id} | {g:>6.2f} | {ft:>6.2f} | {ewc:>7.2f} | {gain:>8.2f} | {forget:>10.2f}")
+
         all_results.append(user_res)
         
     # 3. 保存和统计结果
