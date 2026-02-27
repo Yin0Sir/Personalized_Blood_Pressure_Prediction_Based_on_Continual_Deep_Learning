@@ -6,11 +6,15 @@ import pandas as pd
 import json
 import os
 import math
+import time
 import copy
 from mat73 import loadmat
 from Model_Def.Trainer import Model_Trainer
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, message=r".*torch\.load.*weights_only=False.*")
+
+def count_trainable_params(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def Seed(seed): 
     torch.manual_seed(seed)
@@ -93,6 +97,26 @@ def split_train_to_batches(train_idx, K=3):
     batch_size = T_train // K
     return [train_idx[i * batch_size : (i + 1) * batch_size if i < K - 1 else T_train] for i in range(K)]
 
+# ==================== Unfreeze presets (前缀/模块路径匹配，更稳) ====================
+UNFREEZE_PRESETS = {
+    "head_only": ["final_fc"],
+    "head_4": ["final_fc", "resnet.layer4"],
+    "head_3_4": ["final_fc", "resnet.layer3", "resnet.layer4"],
+    "head_c": ["final_fc", "cornet"],
+    "head_c_4": ["final_fc", "cornet", "resnet.layer4"],
+
+}
+UNFREEZE_PRESET = "head_c"  # 当前启用哪个组合
+
+def set_trainable_by_prefix(model, prefixes):
+    # 冻结全部
+    for p in model.parameters():
+        p.requires_grad = False
+    # 只解冻前缀命中的模块路径
+    for name, p in model.named_parameters():
+        if any(name == pref or name.startswith(pref + ".") for pref in prefixes):
+            p.requires_grad = True
+
 if __name__ == '__main__':
     Seed(6)
     target = 'SBP'  # 或 DBP
@@ -109,12 +133,11 @@ if __name__ == '__main__':
     
     all_results = []
     modes = ['global_eval', 'seq_ft', 'seq_ewc']
-    layers_to_unfreeze = ["final_fc"] # 你可以像 Fine_tune 里一样加入 resnet.layer4
+    layers_to_unfreeze = UNFREEZE_PRESETS[UNFREEZE_PRESET]
     
     # 2. 批量跑实验
     for u_idx, user_id in enumerate(selected_users):
-        if u_idx == 0:
-            print("\nidx | user_id | G_MAE | FT_MAE | EWC_MAE | gain(EWC) | forget(EWC)")
+        t_user0 = time.time()
         print(f"[{u_idx+1}/{len(selected_users)}] Processing User: {user_id}")
         idx_sorted = user2idx_sorted[user_id]
         train_idx, _, test_idx = split_user_stream(idx_sorted)
@@ -135,11 +158,15 @@ if __name__ == '__main__':
             model.load_state_dict(base_state, strict=True)
 
             # 冻结/解冻
-            for param in model.parameters():
-                param.requires_grad = False
-            for name, param in model.named_parameters():
-                if any(layer in name for layer in layers_to_unfreeze):
-                    param.requires_grad = True
+            set_trainable_by_prefix(model, layers_to_unfreeze)
+            if mode == modes[0]:
+                user_res['trainable_params'] = count_trainable_params(model)
+            # 解冻后立刻打印（建议只跑一次）
+            if u_idx == 0 and mode == modes[0]:
+                trainable = [n for n, p in model.named_parameters() if p.requires_grad]
+                print("UNFREEZE_PRESET:", UNFREEZE_PRESET, "->", layers_to_unfreeze)
+                # print("Trainable params:", count_trainable_params(model))
+                # print("trainable cnt:", len(trainable))
 
             Settings = {
                 'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3, betas=(0.9, 0.999), weight_decay=0)",
@@ -148,10 +175,10 @@ if __name__ == '__main__':
             BP_optimizer = eval(Settings['BP_optimizer'])
             model_trainer = eval(Settings['trainer'])
 
-            # 触发新写的范式 ✅ 关键：静默训练（不刷屏）
+            # 触发新写的范式  关键：静默训练（不刷屏）
             res = model_trainer.Train_CL_Model(
                 user_id, batch_loaders, test_loader,
-                mode=mode, lambda_ewc=1e-3, head_keywords=layers_to_unfreeze,
+                mode=mode, lambda_ewc=1e-3, trainable_keywords=layers_to_unfreeze,
                 verbose=0, show_progress=False
             )
             # 收录该模式结果
@@ -161,12 +188,38 @@ if __name__ == '__main__':
                 
         # 计算增益 (Gain)
         user_res['gain'] = user_res['global_eval_test_mae'] - user_res['seq_ewc_test_mae']
-        g = user_res.get('global_eval_test_mae', float('nan'))
-        ft = user_res.get('seq_ft_test_mae', float('nan'))
-        ewc = user_res.get('seq_ewc_test_mae', float('nan'))
+        g_mae  = user_res.get('global_eval_test_mae',  float('nan'))
+        g_rmse = user_res.get('global_eval_test_rmse', float('nan'))
+        g_r2   = user_res.get('global_eval_test_r2',   float('nan'))
+
+        ft_mae  = user_res.get('seq_ft_test_mae',  float('nan'))
+        ft_rmse = user_res.get('seq_ft_test_rmse', float('nan'))
+        ft_r2   = user_res.get('seq_ft_test_r2',   float('nan'))
+
+        ewc_mae  = user_res.get('seq_ewc_test_mae',  float('nan'))
+        ewc_rmse = user_res.get('seq_ewc_test_rmse', float('nan'))
+        ewc_r2   = user_res.get('seq_ewc_test_r2',   float('nan'))
+
         forget = user_res.get('seq_ewc_forget', float('nan'))
-        gain = g - ewc
-        print(f"{u_idx+1:>3d} | {user_id} | {g:>6.2f} | {ft:>6.2f} | {ewc:>7.2f} | {gain:>8.2f} | {forget:>10.2f}")
+
+        gain_mae  = g_mae - ewc_mae
+        gain_rmse = g_rmse - ewc_rmse
+        delta_r2  = ewc_r2 - g_r2
+
+        # 训练参数量（同一用户同一 preset 固定，存一份即可）
+        user_res['trainable_params'] = user_res.get('trainable_params', float('nan'))  # 你也可在首次解冻后赋值
+        t_user = time.time() - t_user0
+
+        if u_idx == 0:
+            print("\nidx | user_id | P(M) | G(MAE/RMSE/R2) | FT(MAE/RMSE/R2) | EWC(MAE/RMSE/R2) | gain_mae | dR2 | forget | t(s)")
+
+        print(
+            f"{u_idx+1:>3d} | {user_id} | {user_res.get('trainable_params', float('nan'))/1e6:>4.2f} | "
+            f"{g_mae:>5.2f}/{g_rmse:>5.2f}/{g_r2:>6.3f} | "
+            f"{ft_mae:>5.2f}/{ft_rmse:>5.2f}/{ft_r2:>6.3f} | "
+            f"{ewc_mae:>5.2f}/{ewc_rmse:>5.2f}/{ewc_r2:>6.3f} | "
+            f"{gain_mae:>8.2f} | {delta_r2:>6.3f} | {forget:>6.2f} | {t_user:>5.1f}"
+        )
 
         all_results.append(user_res)
         
@@ -174,10 +227,83 @@ if __name__ == '__main__':
     output_dir = './Model_Training/CL_Results'
     os.makedirs(output_dir, exist_ok=True)
     df = pd.DataFrame(all_results)
-    df.to_csv(os.path.join(output_dir, f"summary_{target}.csv"), index=False)
-    
-    stats = {"mean": df.mean(numeric_only=True).to_dict(), "std": df.std(numeric_only=True).to_dict()}
-    with open(os.path.join(output_dir, f"summary_{target}.json"), 'w') as f:
+    def series_stats(s: pd.Series):
+        s = pd.to_numeric(s, errors="coerce").dropna()
+        if len(s) == 0:
+            return {}
+        return {
+            "n": int(s.shape[0]),
+            "mean": float(s.mean()),
+            "std": float(s.std()),
+            "median": float(s.median()),
+            "min": float(s.min()),
+            "max": float(s.max()),
+            "q25": float(s.quantile(0.25)),
+            "q75": float(s.quantile(0.75)),
+            "iqr": float(s.quantile(0.75) - s.quantile(0.25)),
+        }
+
+    # 关键列（按你的命名：mode_metric）
+    cols = {
+        "gain_mae": "gain",
+        "forget": "seq_ewc_forget",
+        "g_mae": "global_eval_test_mae",
+        "g_rmse": "global_eval_test_rmse",
+        "g_r2": "global_eval_test_r2",
+        "ft_mae": "seq_ft_test_mae",
+        "ft_rmse": "seq_ft_test_rmse",
+        "ft_r2": "seq_ft_test_r2",
+        "ewc_mae": "seq_ewc_test_mae",
+        "ewc_rmse": "seq_ewc_test_rmse",
+        "ewc_r2": "seq_ewc_test_r2",
+        "trainable_params": "trainable_params",
+    }
+
+    stats = {"columns": {}, "overall": {}}
+    for k, c in cols.items():
+        if c in df.columns:
+            stats["columns"][k] = series_stats(df[c])
+
+    # 胜率/分组统计（以 MAE 为准）
+    if "gain" in df.columns:
+        improved = df["gain"] > 0
+        stats["overall"]["n_users"] = int(len(df))
+        stats["overall"]["improve_rate_mae"] = float(improved.mean())
+        stats["overall"]["n_improved"] = int(improved.sum())
+        stats["overall"]["n_degraded"] = int((~improved).sum())
+
+        if improved.any():
+            stats["overall"]["gain_mean_improved"] = float(df.loc[improved, "gain"].mean())
+            stats["overall"]["gain_median_improved"] = float(df.loc[improved, "gain"].median())
+        if (~improved).any():
+            stats["overall"]["gain_mean_degraded"] = float(df.loc[~improved, "gain"].mean())
+            stats["overall"]["gain_median_degraded"] = float(df.loc[~improved, "gain"].median())
+
+    # best / worst user（按 gain）
+    if "gain" in df.columns and "user_id" in df.columns and len(df) > 0:
+        best_idx = df["gain"].idxmax()
+        worst_idx = df["gain"].idxmin()
+        stats["overall"]["best_user"] = {
+            "user_id": df.loc[best_idx, "user_id"],
+            "gain": float(df.loc[best_idx, "gain"]),
+            "g_mae": float(df.loc[best_idx, "global_eval_test_mae"]),
+            "ewc_mae": float(df.loc[best_idx, "seq_ewc_test_mae"]),
+        }
+        stats["overall"]["worst_user"] = {
+            "user_id": df.loc[worst_idx, "user_id"],
+            "gain": float(df.loc[worst_idx, "gain"]),
+            "g_mae": float(df.loc[worst_idx, "global_eval_test_mae"]),
+            "ewc_mae": float(df.loc[worst_idx, "seq_ewc_test_mae"]),
+        }
+
+    # 写 JSON
+    with open(os.path.join(output_dir, f"summary_{target}.json"), "w") as f:
         json.dump(stats, f, indent=4)
-        
-    print(f"\nAll Done! Mean Personalization Gain: {stats['mean']['gain']:.4f} mmHg")
+
+    # 控制台也打印一段简洁统计
+    print(f"\nUsers: {stats['overall'].get('n_users', len(df))} | Improve rate(MAE): {stats['overall'].get('improve_rate_mae', float('nan')):.3f}")
+    print(f"Gain(MAE) mean±std: {stats['columns'].get('gain_mae', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('gain_mae', {}).get('std', float('nan')):.3f}")
+    print(f"Gain(MAE) median[IQR]: {stats['columns'].get('gain_mae', {}).get('median', float('nan')):.3f} [{stats['columns'].get('gain_mae', {}).get('iqr', float('nan')):.3f}]")
+    print(f"Forget mean±std: {stats['columns'].get('forget', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('forget', {}).get('std', float('nan')):.3f}")
+
+    df.to_csv(os.path.join(output_dir, f"summary_{target}.csv"), index=False)

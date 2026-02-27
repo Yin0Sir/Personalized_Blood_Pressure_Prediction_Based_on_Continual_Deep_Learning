@@ -46,6 +46,4 @@ def test(model_fn, input_channels=2, input_length=1250, device="cuda"):
     except Exception as e:
         print(f"Error in forward pass: {e}\n")
 
-# test(ResNet.Resnet18_1D)
-# test(DCCR.DCCR_2_1)
-test(CF_Basic_s.Resnet34_1D)
+test(DDCCor.DDCCR_Net)

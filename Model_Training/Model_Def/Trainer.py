@@ -283,7 +283,9 @@ class Model_Trainer:
         return loss, r2, me, sd, rmse, mae
 
     # 持续学习/EWC 主训练范式
-    def Train_CL_Model(self, user_id, batch_loaders, test_loader, mode='seq_ewc', lambda_ewc=1e-3, head_keywords=["final_fc"],
+    def Train_CL_Model(self, user_id, batch_loaders, test_loader, mode='seq_ewc', lambda_ewc=1e-3,
+        trainable_keywords=None,       # ✅ 更通用：不止 head
+        head_keywords=None,            # ✅ 兼容你旧调用
         verbose=0,            # 0: 不打印; 1: 仅打印开始/结束; 2: 打印每个CL batch摘要
         show_progress=False,  # True 才显示 progressbar
 ):
@@ -299,18 +301,28 @@ class Model_Trainer:
 
         # 1) global_eval：只评估一次
         if mode == 'global_eval':
-            _, r2, _, _, rmse, mae = self.Evaluate_Loader(test_loader)
-            result_dict.update({'test_mae': mae, 'test_rmse': rmse, 'test_r2': r2})
-            if verbose >= 1:
-                print(f"[{user_id}] {mode} done | MAE {mae:.4f} RMSE {rmse:.4f} R2 {r2:.4f}")
+            loss, r2, me, sd, rmse, mae = self.Evaluate_Loader(test_loader)
+            result_dict.update({
+                'test_loss': loss,
+                'test_r2': r2,
+                'test_me': me,
+                'test_sd': sd,
+                'test_rmse': rmse,
+                'test_mae': mae,
+            })
             Writer.close()
             return result_dict
+        # 兼容：旧代码传 head_keywords，新代码传 trainable_keywords
+        if trainable_keywords is None:
+            trainable_keywords = head_keywords if head_keywords is not None else ["final_fc"]
 
         # 2) seq_ft / seq_ewc：顺序训练
-        filter_fn = lambda name: any(kw in name for kw in head_keywords)
+        filter_fn = lambda name: any(name == pref or name.startswith(pref + ".") for pref in trainable_keywords)
         ewc = EWCRegularizer(self.Model_Running, filter_fn, self.Device)
-        err_b1_history = []
         global_step = 1
+        cl_batch_loss_mean = []
+        b1_mae_hist = []
+        all_train_losses = []
 
         for k, loader in enumerate(batch_loaders):
             # 统计该 CL batch 的平均训练 loss（不刷进度条）
@@ -362,8 +374,11 @@ class Model_Trainer:
                         global_step += 1
 
             # 每个 CL batch 结束：评估 batch1 MAE 作为遗忘监控
+            avg_loss_k = float(np.mean(batch_losses)) if len(batch_losses) else 0.0
+            cl_batch_loss_mean.append(avg_loss_k)
+            all_train_losses.extend(batch_losses)
             _, _, _, _, _, b1_mae = self.Evaluate_Loader(batch_loaders[0])
-            err_b1_history.append(b1_mae)
+            b1_mae_hist.append(float(b1_mae))
 
             # EWC：每段后更新快照+Fisher
             if mode == 'seq_ewc':
@@ -375,11 +390,30 @@ class Model_Trainer:
                 print(f"  - CL batch {k+1}/{len(batch_loaders)} | avg_loss {avg_loss:.3f} | b1_mae {b1_mae:.3f}")
 
         # 3) 最终 test 评估
-        _, test_r2, _, _, test_rmse, test_mae = self.Evaluate_Loader(test_loader)
-        result_dict.update({'test_mae': test_mae, 'test_rmse': test_rmse, 'test_r2': test_r2})
+        test_loss, test_r2, test_me, test_sd, test_rmse, test_mae = self.Evaluate_Loader(test_loader)
+        result_dict.update({
+            'test_loss': test_loss,
+            'test_r2': test_r2,
+            'test_me': test_me,
+            'test_sd': test_sd,
+            'test_rmse': test_rmse,
+            'test_mae': test_mae,
+        })
 
-        # 遗忘度：最后一次b1_mae - 第一次b1_mae
-        result_dict['forget'] = (err_b1_history[-1] - err_b1_history[0]) if len(err_b1_history) >= 2 else 0.0
+        # 额外：CL过程统计（尽可能全）
+        result_dict['cl_train_loss_mean'] = float(np.mean(all_train_losses)) if len(all_train_losses) else 0.0
+        for i, v in enumerate(cl_batch_loss_mean, 1):
+            result_dict[f'cl_batch{i}_loss_mean'] = float(v)
+
+        # b1 mae 序列（用于遗忘、漂移诊断）
+        for i, v in enumerate(b1_mae_hist, 1):
+            result_dict[f'b1_mae_after_batch{i}'] = float(v)
+
+        result_dict['b1_mae_first'] = float(b1_mae_hist[0]) if len(b1_mae_hist) else 0.0
+        result_dict['b1_mae_last']  = float(b1_mae_hist[-1]) if len(b1_mae_hist) else 0.0
+
+        # 遗忘度（你原来逻辑）
+        result_dict['forget'] = (b1_mae_hist[-1] - b1_mae_hist[0]) if len(b1_mae_hist) >= 2 else 0.0
 
         if verbose >= 1:
             print(f"[{user_id}] {mode} done | MAE {test_mae:.4f} | Forget {result_dict['forget']:.4f}")
