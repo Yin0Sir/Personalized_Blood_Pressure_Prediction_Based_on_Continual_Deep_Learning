@@ -282,10 +282,13 @@ class Model_Trainer:
         mae = MAE(all_labels, all_preds)
         return loss, r2, me, sd, rmse, mae
 
-    # 持续学习/EWC 主训练范式
-    def Train_CL_Model(self, user_id, batch_loaders, test_loader, mode='seq_ewc', lambda_ewc=1e-3,
-        trainable_keywords=None,       # ✅ 更通用：不止 head
-        head_keywords=None,            # ✅ 兼容你旧调用
+    # 持续学习 EWC 主训练范式
+    def Train_CL_Model(self, user_id, batch_loaders, test_loader, val_loader=None,
+        mode='seq_ewc', lambda_ewc=1e-3, trainable_keywords=None, head_keywords=None,
+        val_check='batch',         # ✅ 'batch' 或 'epoch'
+        rollback_to_best=True,     # ✅ 是否回滚到val最佳
+        patience=0,                # ✅ 0=不早停；>0支持早停
+        min_delta=0.0,             # ✅ val改进阈值
         verbose=0,            # 0: 不打印; 1: 仅打印开始/结束; 2: 打印每个CL batch摘要
         show_progress=False,  # True 才显示 progressbar
 ):
@@ -323,7 +326,32 @@ class Model_Trainer:
         cl_batch_loss_mean = []
         b1_mae_hist = []
         all_train_losses = []
+        # ==================== val best checkpoint (Priority-1) ====================
+        best_val_mae = float('inf')
+        best_state = None
+        best_tag = None
+        no_improve = 0
+        stopped_early = False
 
+        def _eval_val_and_maybe_update(tag: str):
+            """返回 True 表示触发 early-stop（仅 patience>0 时可能触发）"""
+            nonlocal best_val_mae, best_state, best_tag, no_improve
+            if val_loader is None:
+                return False
+
+            v_loss, v_r2, v_me, v_sd, v_rmse, v_mae = self.Evaluate_Loader(val_loader)
+            result_dict[f'val_mae_{tag}'] = float(v_mae)
+
+            if (v_mae + min_delta) < best_val_mae:
+                best_val_mae = float(v_mae)
+                best_tag = tag
+                best_state = {k: v.detach().cpu().clone() for k, v in self.Model_Running.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            return (patience > 0 and no_improve >= patience)
+        
         for k, loader in enumerate(batch_loaders):
             # 统计该 CL batch 的平均训练 loss（不刷进度条）
             batch_losses = []
@@ -373,6 +401,15 @@ class Model_Trainer:
                             Writer.add_scalar(f'CL_Loss/Batch_{k+1}', loss.item(), global_step)
                         global_step += 1
 
+                # ===== Priority-1: val check per epoch (optional) =====
+                if (val_loader is not None) and (val_check == 'epoch'):
+                    if _eval_val_and_maybe_update(tag=f'after_b{k+1}_e{Epoch}'):
+                        stopped_early = True
+                        break
+
+            # epoch 循环若提前停止，则直接跳出 batch 循环
+            if stopped_early:
+                break
             # 每个 CL batch 结束：评估 batch1 MAE 作为遗忘监控
             avg_loss_k = float(np.mean(batch_losses)) if len(batch_losses) else 0.0
             cl_batch_loss_mean.append(avg_loss_k)
@@ -384,10 +421,24 @@ class Model_Trainer:
             if mode == 'seq_ewc':
                 ewc.consolidate()
                 ewc.estimate_fisher(loader, self.BP_Loss_Fun)
-
+            # ===== Priority-1: val check per CL batch (default) =====
+            if (val_loader is not None) and (val_check == 'batch'):
+                if _eval_val_and_maybe_update(tag=f'after_batch{k+1}'):
+                    stopped_early = True
+                    break
             if verbose >= 2:
                 avg_loss = float(np.mean(batch_losses)) if len(batch_losses) else 0.0
                 print(f"  - CL batch {k+1}/{len(batch_loaders)} | avg_loss {avg_loss:.3f} | b1_mae {b1_mae:.3f}")
+            if stopped_early:
+                break
+        # ==================== Priority-1: rollback to best val checkpoint ====================
+        if rollback_to_best and (best_state is not None):
+            self.Model_Running.load_state_dict(best_state, strict=True)
+            result_dict['val_best_mae'] = float(best_val_mae)
+            result_dict['val_best_at'] = best_tag
+        else:
+            result_dict['val_best_mae'] = float('nan')
+            result_dict['val_best_at'] = None
 
         # 3) 最终 test 评估
         test_loss, test_r2, test_me, test_sd, test_rmse, test_mae = self.Evaluate_Loader(test_loader)

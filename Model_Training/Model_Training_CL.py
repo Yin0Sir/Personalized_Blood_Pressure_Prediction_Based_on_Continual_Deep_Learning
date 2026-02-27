@@ -140,9 +140,9 @@ if __name__ == '__main__':
         t_user0 = time.time()
         print(f"[{u_idx+1}/{len(selected_users)}] Processing User: {user_id}")
         idx_sorted = user2idx_sorted[user_id]
-        train_idx, _, test_idx = split_user_stream(idx_sorted)
+        train_idx, val_idx, test_idx = split_user_stream(idx_sorted)
         batch_idx_list = split_train_to_batches(train_idx, K=3)
-        
+        val_loader  = data.DataLoader(CLDataset(signals[val_idx],  labels[val_idx]),  batch_size=32, shuffle=False)
         test_loader = data.DataLoader(CLDataset(signals[test_idx], labels[test_idx]), batch_size=32, shuffle=False)
         batch_loaders = [data.DataLoader(CLDataset(signals[b], labels[b]), batch_size=32, shuffle=False) for b in batch_idx_list]
         
@@ -175,9 +175,11 @@ if __name__ == '__main__':
             BP_optimizer = eval(Settings['BP_optimizer'])
             model_trainer = eval(Settings['trainer'])
 
-            # 触发新写的范式  关键：静默训练（不刷屏）
             res = model_trainer.Train_CL_Model(
-                user_id, batch_loaders, test_loader,
+                user_id, batch_loaders, test_loader, val_loader=val_loader,
+                val_check='batch',              # ✅ 每个CL batch后评估一次val
+                rollback_to_best=True,          # ✅ 训练结束回滚到val最优
+                patience=0,                     # ✅ 0=不早停，只回滚（最保守）
                 mode=mode, lambda_ewc=1e-3, trainable_keywords=layers_to_unfreeze,
                 verbose=0, show_progress=False
             )
@@ -297,13 +299,13 @@ if __name__ == '__main__':
         }
 
     # 写 JSON
-    with open(os.path.join(output_dir, f"summary_{target}.json"), "w") as f:
+    timestamp = time.strftime("%H%M%S")
+    with open(os.path.join(output_dir, f"summary-{target}-{timestamp}.json"), "w") as f:
         json.dump(stats, f, indent=4)
+    df.to_csv(os.path.join(output_dir, f"summary-{target}-{timestamp}.csv"), index=False)
 
     # 控制台也打印一段简洁统计
     print(f"\nUsers: {stats['overall'].get('n_users', len(df))} | Improve rate(MAE): {stats['overall'].get('improve_rate_mae', float('nan')):.3f}")
     print(f"Gain(MAE) mean±std: {stats['columns'].get('gain_mae', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('gain_mae', {}).get('std', float('nan')):.3f}")
     print(f"Gain(MAE) median[IQR]: {stats['columns'].get('gain_mae', {}).get('median', float('nan')):.3f} [{stats['columns'].get('gain_mae', {}).get('iqr', float('nan')):.3f}]")
     print(f"Forget mean±std: {stats['columns'].get('forget', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('forget', {}).get('std', float('nan')):.3f}")
-
-    df.to_csv(os.path.join(output_dir, f"summary_{target}.csv"), index=False)
