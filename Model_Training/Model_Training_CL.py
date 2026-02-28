@@ -159,7 +159,7 @@ if __name__ == '__main__':
                 print("UNFREEZE_PRESET:", UNFREEZE_PRESET, "->", layers_to_unfreeze)
 
             Settings = {
-                'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4, betas=(0.9, 0.999), weight_decay=0)",
+                'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-6, betas=(0.9, 0.999), weight_decay=0)",
                 'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=20, save_states=False, save_final=False, timeid=TimeID)"
             }
             BP_optimizer = eval(Settings['BP_optimizer'])
@@ -170,7 +170,7 @@ if __name__ == '__main__':
                 val_check='batch',              # ✅ 每个CL batch后评估一次val
                 rollback_to_best=True,          # ✅ 训练结束回滚到val最优
                 patience=0,                     # ✅ 0=不早停，只回滚（最保守）
-                mode=mode, lambda_ewc=1, trainable_keywords=layers_to_unfreeze,
+                mode=mode, lambda_ewc=100, trainable_keywords=layers_to_unfreeze,
                 verbose=0, show_progress=False
             )
             # 收录该模式结果
