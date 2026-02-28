@@ -7,6 +7,7 @@ import json
 import os
 import math
 import time
+from datetime import datetime
 import copy
 from mat73 import loadmat
 from Model_Def.Trainer import Model_Trainer
@@ -37,8 +38,6 @@ class CLDataset(data.Dataset):
         return self.Input[idx, :], self.Label[[idx]]
 
 def _subject_to_key(sub):
-    """把 mat73 读出来的 Subject cell 元素统一成可哈希的 str key"""
-    # 1) 不断拆单元素嵌套：[['S001']] / [array(['S001'])] / array(['S001'])
     while True:
         if isinstance(sub, list) and len(sub) == 1:
             sub = sub[0]
@@ -47,14 +46,10 @@ def _subject_to_key(sub):
             sub = sub.item()
             continue
         break
-
-    # 2) MATLAB char array / 字符列表 -> 拼字符串：['S','0','0','1'] 或 array(['S','0','0','1'])
     if isinstance(sub, np.ndarray) and sub.dtype.kind in ("U", "S"):
         return "".join(sub.astype(str).flatten().tolist())
     if isinstance(sub, list) and all(isinstance(x, str) for x in sub):
         return "".join(sub)
-
-    # 3) 正常字符串/其它兜底
     if isinstance(sub, str):
         return sub
     return str(sub)
@@ -71,7 +66,7 @@ def load_and_sort_user_data(mat_path, target_label='SBP'):
 
     user2idx = {}
     for i, sub in enumerate(subjects):
-        sub_key = _subject_to_key(sub)        # ✅ 修复：保证可哈希
+        sub_key = _subject_to_key(sub)
         if sub_key not in user2idx:
             user2idx[sub_key] = []
         user2idx[sub_key].append(i)
@@ -79,25 +74,23 @@ def load_and_sort_user_data(mat_path, target_label='SBP'):
     user2idx_sorted = {}
     for sub_key, idx_list in user2idx.items():
         idx_array = np.array(idx_list, dtype=np.int64)
-        # 获取时间起点并排序
         t0_values = time_seq[idx_array, 0, 0] if time_seq.ndim == 3 else time_seq[idx_array, 0]
         sort_args = np.argsort(t0_values)
         user2idx_sorted[sub_key] = idx_array[sort_args]
         
     return signals, labels, user2idx_sorted
 
-def split_user_stream(idx_sorted, train_ratio=0.7, val_ratio=0.2):
+def split_user_stream(idx_sorted, train_ratio=0.8, val_ratio=0.1):
     T = len(idx_sorted)
     return (idx_sorted[:math.floor(train_ratio * T)], 
             idx_sorted[math.floor(train_ratio * T):math.floor((train_ratio + val_ratio) * T)], 
             idx_sorted[math.floor((train_ratio + val_ratio) * T):])
 
-def split_train_to_batches(train_idx, K=3):
+def split_train_to_batches(train_idx, K=4):
     T_train = len(train_idx)
     batch_size = T_train // K
     return [train_idx[i * batch_size : (i + 1) * batch_size if i < K - 1 else T_train] for i in range(K)]
 
-# ==================== Unfreeze presets (前缀/模块路径匹配，更稳) ====================
 UNFREEZE_PRESETS = {
     "head_only": ["final_fc"],
     "head_4": ["final_fc", "resnet.layer4"],
@@ -109,10 +102,8 @@ UNFREEZE_PRESETS = {
 UNFREEZE_PRESET = "head_c"  # 当前启用哪个组合
 
 def set_trainable_by_prefix(model, prefixes):
-    # 冻结全部
     for p in model.parameters():
         p.requires_grad = False
-    # 只解冻前缀命中的模块路径
     for name, p in model.named_parameters():
         if any(name == pref or name.startswith(pref + ".") for pref in prefixes):
             p.requires_grad = True
@@ -125,11 +116,12 @@ if __name__ == '__main__':
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    TimeID = datetime.now().strftime('%Y_%m%d_%H%M%S')
     
     # 1. 数据准备
     signals, labels, user2idx_sorted = load_and_sort_user_data(mat_path, target)
     valid_users = [u for u in user2idx_sorted.keys() if len(user2idx_sorted[u]) >= 300]
-    selected_users = random.sample(valid_users, min(10, len(valid_users))) # 测试跑10个人
+    selected_users = random.sample(valid_users, min(200, len(valid_users))) # 测试跑20个人
     
     all_results = []
     modes = ['global_eval', 'seq_ft', 'seq_ewc']
@@ -141,10 +133,10 @@ if __name__ == '__main__':
         print(f"[{u_idx+1}/{len(selected_users)}] Processing User: {user_id}")
         idx_sorted = user2idx_sorted[user_id]
         train_idx, val_idx, test_idx = split_user_stream(idx_sorted)
-        batch_idx_list = split_train_to_batches(train_idx, K=3)
-        val_loader  = data.DataLoader(CLDataset(signals[val_idx],  labels[val_idx]),  batch_size=32, shuffle=False)
-        test_loader = data.DataLoader(CLDataset(signals[test_idx], labels[test_idx]), batch_size=32, shuffle=False)
-        batch_loaders = [data.DataLoader(CLDataset(signals[b], labels[b]), batch_size=32, shuffle=False) for b in batch_idx_list]
+        batch_idx_list = split_train_to_batches(train_idx, K=4)
+        val_loader  = data.DataLoader(CLDataset(signals[val_idx],  labels[val_idx]),  batch_size=8, shuffle=False)
+        test_loader = data.DataLoader(CLDataset(signals[test_idx], labels[test_idx]), batch_size=8, shuffle=False)
+        batch_loaders = [data.DataLoader(CLDataset(signals[b], labels[b]), batch_size=8, shuffle=False) for b in batch_idx_list]
         
         user_res = {'user_id': user_id}
         
@@ -165,12 +157,10 @@ if __name__ == '__main__':
             if u_idx == 0 and mode == modes[0]:
                 trainable = [n for n, p in model.named_parameters() if p.requires_grad]
                 print("UNFREEZE_PRESET:", UNFREEZE_PRESET, "->", layers_to_unfreeze)
-                # print("Trainable params:", count_trainable_params(model))
-                # print("trainable cnt:", len(trainable))
 
             Settings = {
-                'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3, betas=(0.9, 0.999), weight_decay=0)",
-                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=32, num_epochs=5, save_states=False, save_final=False)"
+                'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4, betas=(0.9, 0.999), weight_decay=0)",
+                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=20, save_states=False, save_final=False, timeid=TimeID)"
             }
             BP_optimizer = eval(Settings['BP_optimizer'])
             model_trainer = eval(Settings['trainer'])
@@ -180,7 +170,7 @@ if __name__ == '__main__':
                 val_check='batch',              # ✅ 每个CL batch后评估一次val
                 rollback_to_best=True,          # ✅ 训练结束回滚到val最优
                 patience=0,                     # ✅ 0=不早停，只回滚（最保守）
-                mode=mode, lambda_ewc=1e-3, trainable_keywords=layers_to_unfreeze,
+                mode=mode, lambda_ewc=1, trainable_keywords=layers_to_unfreeze,
                 verbose=0, show_progress=False
             )
             # 收录该模式结果
@@ -299,10 +289,9 @@ if __name__ == '__main__':
         }
 
     # 写 JSON
-    timestamp = time.strftime("%H%M%S")
-    with open(os.path.join(output_dir, f"summary-{target}-{timestamp}.json"), "w") as f:
+    df.to_csv(os.path.join(output_dir, f"summary-{target}-{TimeID}.csv"), index=False)
+    with open(os.path.join(output_dir, f"summary-{target}-{TimeID}.json"), "w") as f:
         json.dump(stats, f, indent=4)
-    df.to_csv(os.path.join(output_dir, f"summary-{target}-{timestamp}.csv"), index=False)
 
     # 控制台也打印一段简洁统计
     print(f"\nUsers: {stats['overall'].get('n_users', len(df))} | Improve rate(MAE): {stats['overall'].get('improve_rate_mae', float('nan')):.3f}")

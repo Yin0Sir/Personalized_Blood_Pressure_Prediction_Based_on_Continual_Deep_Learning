@@ -41,7 +41,7 @@ widgets = [
 
 
 class Model_Trainer:
-    def __init__(self, model, criterion_BP, optimizer_BP, device, settings_yml, batch_size=32, num_epochs=100, save_states=False, save_final=False):
+    def __init__(self, model, criterion_BP, optimizer_BP, device, settings_yml, batch_size=32, num_epochs=100, save_states=False, save_final=False, timeid=None):
 
         self.Model_Running = model.to(device)
         self.Model_BestTest = []
@@ -53,6 +53,7 @@ class Model_Trainer:
         self.Save_States = save_states
         self.Save_Final = save_final
         self.YMLSettings = settings_yml
+        self.TimeID = timeid if timeid is not None else datetime.now().strftime('%Y_%m%d_%H%M%S')
 
     def Model_Info(self):
         model = self.Model_Running
@@ -71,7 +72,7 @@ class Model_Trainer:
         self.Test_Set_List = test_set
 
     def Train_Model(self):
-        TimeID = datetime.now().strftime('%Y_%m%d_%H%M%S')
+        TimeID = self.TimeID
         ModelID = TimeID[-6:]
         
         Start_Epoch = 1
@@ -292,10 +293,8 @@ class Model_Trainer:
         verbose=0,            # 0: 不打印; 1: 仅打印开始/结束; 2: 打印每个CL batch摘要
         show_progress=False,  # True 才显示 progressbar
 ):
-        TimeID = datetime.now().strftime('%Y_%m%d_%H%M%S')
-
-        # TensorBoard 仍然保留（不影响控制台）
-        Writer = SW(os.path.join('Model_Training/TensorBoard/CL_Experiments', TimeID + f"_{mode}"))
+        TimeID = self.TimeID
+        Writer = SW(os.path.join(os.path.join('Model_Training/TensorBoard/CL_Experiments', TimeID), f"_{mode}"))
 
         if verbose >= 1:
             print(f"[{user_id}] {mode} ...")
