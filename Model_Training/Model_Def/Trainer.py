@@ -138,7 +138,8 @@ class Model_Trainer:
                     Epoch_Train_MAE = MAE(Epoch_BP_Labels, Epoch_BP_Preds)
 
                     # 计算训练损失
-                    Epoch_BP_Train_Loss = self.BP_Loss_Fun(torch.from_numpy(Epoch_BP_Labels), torch.from_numpy(Epoch_BP_Preds))
+                    # loss expects (preds, labels)
+                    Epoch_BP_Train_Loss = self.BP_Loss_Fun(torch.from_numpy(Epoch_BP_Preds), torch.from_numpy(Epoch_BP_Labels))
                     
                     # 打印训练错误指标的摘要
                     print('Epoch BP Training Loss: {:e} R2: {}'.format(Epoch_BP_Train_Loss, Epoch_Train_R2))
@@ -172,7 +173,8 @@ class Model_Trainer:
                     Epoch_Labels = np.concatenate(Epoch_Labels, axis=0)
                     Epoch_Preds = np.concatenate(Epoch_Preds, axis=0)
 
-                    Epoch_Test_Loss = self.BP_Loss_Fun(torch.from_numpy(Epoch_Labels), torch.from_numpy(Epoch_Preds))
+                    # loss expects (preds, labels)
+                    Epoch_Test_Loss = self.BP_Loss_Fun(torch.from_numpy(Epoch_Preds), torch.from_numpy(Epoch_Labels))
                     
                     Epoch_Test_R2 = R2(Epoch_Labels, Epoch_Preds)
                     Epoch_Test_ME = ME(Epoch_Labels, Epoch_Preds)
@@ -351,6 +353,9 @@ class Model_Trainer:
 
             for Epoch in range(1, self.Num_Epoch + 1):  # Num_Epoch 视作 epochs_per_batch
                 self.Model_Running.train()
+                # collect per-epoch predictions/labels for metrics
+                Epoch_BP_Labels = []
+                Epoch_BP_Preds = []
 
                 if show_progress:
                     with PB.ProgressBar(widgets=widgets, max_value=len(loader)) as bar:
@@ -359,6 +364,9 @@ class Model_Trainer:
 
                             self.Optimizer_BP.zero_grad()
                             outputs = self.Model_Running(inputs)
+                            # collect preds/labels for this epoch
+                            Epoch_BP_Labels.append(labels.cpu().detach().numpy())
+                            Epoch_BP_Preds.append(outputs.cpu().detach().numpy())
                             loss = self.BP_Loss_Fun(outputs, labels)
 
                             if mode == 'seq_ewc' and k > 0:
@@ -380,6 +388,9 @@ class Model_Trainer:
 
                         self.Optimizer_BP.zero_grad()
                         outputs = self.Model_Running(inputs)
+                        # collect preds/labels for this epoch
+                        Epoch_BP_Labels.append(labels.cpu().detach().numpy())
+                        Epoch_BP_Preds.append(outputs.cpu().detach().numpy())
                         loss = self.BP_Loss_Fun(outputs, labels)
 
                         if mode == 'seq_ewc' and k > 0:
