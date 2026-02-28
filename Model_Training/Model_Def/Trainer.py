@@ -350,7 +350,12 @@ class Model_Trainer:
         for k, loader in enumerate(batch_loaders):
             # 统计该 CL batch 的平均训练 loss（不刷进度条）
             batch_losses = []
-
+            # 状态传递的重置：每进入一个新任务，清空上一任务的动量残留，但保持模型参数传递
+            self.Optimizer_BP = torch.optim.Adam(
+                filter(lambda p: p.requires_grad, self.Model_Running.parameters()), 
+                lr=1e-4, 
+                weight_decay=0
+            )
             for Epoch in range(1, self.Num_Epoch + 1):  # Num_Epoch 视作 epochs_per_batch
                 self.Model_Running.train()
                 # collect per-epoch predictions/labels for metrics
