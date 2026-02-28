@@ -10,15 +10,12 @@ from torch.utils.tensorboard import SummaryWriter as SW
 from io import StringIO
 import sys
 
-# R-Squared
 def R2(y_true, y_pred):
     return r2_score(y_true, y_pred)
 
-# Mean error
 def ME(y_true, y_pred):
     return np.mean(y_true-y_pred)
 
-# Standard deviation of error
 def SD(y_true, y_pred):
     return np.std(y_true-y_pred)
 
@@ -39,7 +36,6 @@ widgets = [
     PB.ETA()
 ]
 
-
 class Model_Trainer:
     def __init__(self, model, criterion_BP, optimizer_BP, device, settings_yml, batch_size=32, num_epochs=100, save_states=False, save_final=False, timeid=None):
 
@@ -53,7 +49,7 @@ class Model_Trainer:
         self.Save_States = save_states
         self.Save_Final = save_final
         self.YMLSettings = settings_yml
-        self.TimeID = timeid if timeid is not None else datetime.now().strftime('%Y_%m%d_%H%M%S')
+        self.TimeID = timeid if timeid is not None else datetime.now().strftime('%H%M%S')
 
     def Model_Info(self):
         model = self.Model_Running
@@ -274,7 +270,6 @@ class Model_Trainer:
         all_preds = np.concatenate(all_preds, axis=0)
         all_labels = np.concatenate(all_labels, axis=0)
         
-        # 计算各种指标
         loss = self.BP_Loss_Fun(torch.from_numpy(all_preds), torch.from_numpy(all_labels)).item()
         r2 = R2(all_labels, all_preds)
         me = ME(all_labels, all_preds)
@@ -301,7 +296,6 @@ class Model_Trainer:
 
         result_dict = {'user_id': user_id, 'mode': mode}
 
-        # 1) global_eval：只评估一次
         if mode == 'global_eval':
             loss, r2, me, sd, rmse, mae = self.Evaluate_Loader(test_loader)
             result_dict.update({
@@ -314,7 +308,7 @@ class Model_Trainer:
             })
             Writer.close()
             return result_dict
-        # 兼容：旧代码传 head_keywords，新代码传 trainable_keywords
+        
         if trainable_keywords is None:
             trainable_keywords = head_keywords if head_keywords is not None else ["final_fc"]
 
@@ -325,7 +319,7 @@ class Model_Trainer:
         cl_batch_loss_mean = []
         b1_mae_hist = []
         all_train_losses = []
-        # ==================== val best checkpoint (Priority-1) ====================
+        # 验证集+初始化早停标志和最佳模型跟踪
         best_val_mae = float('inf')
         best_state = None
         best_tag = None
@@ -400,7 +394,7 @@ class Model_Trainer:
                             Writer.add_scalar(f'CL_Loss/Batch_{k+1}', loss.item(), global_step)
                         global_step += 1
 
-                # ===== Priority-1: val check per epoch (optional) =====
+                # 每个 epoch 后的评估和早停判断
                 if (val_loader is not None) and (val_check == 'epoch'):
                     if _eval_val_and_maybe_update(tag=f'after_b{k+1}_e{Epoch}'):
                         stopped_early = True
@@ -415,12 +409,31 @@ class Model_Trainer:
             all_train_losses.extend(batch_losses)
             _, _, _, _, _, b1_mae = self.Evaluate_Loader(batch_loaders[0])
             b1_mae_hist.append(float(b1_mae))
+            # 将每个 epoch 结束时的预测和标签合并，计算所有指标
+            Epoch_BP_Labels = np.concatenate(Epoch_BP_Labels, axis=0)
+            Epoch_BP_Preds = np.concatenate(Epoch_BP_Preds, axis=0)
+
+            # 计算各项指标
+            Epoch_Train_R2 = R2(Epoch_BP_Labels, Epoch_BP_Preds)
+            Epoch_Train_ME = ME(Epoch_BP_Labels, Epoch_BP_Preds)
+            Epoch_Train_SD = SD(Epoch_BP_Labels, Epoch_BP_Preds)
+            Epoch_Train_RMSE = RMSE(Epoch_BP_Labels, Epoch_BP_Preds)
+            Epoch_Train_MAE = MAE(Epoch_BP_Labels, Epoch_BP_Preds)
+
+            # 将训练结果记录到 TensorBoard
+            Writer.add_scalars(f'Metrics/Batch_{k+1}', {
+                'R2': Epoch_Train_R2,
+                'ME': Epoch_Train_ME,
+                'SD': Epoch_Train_SD,
+                'RMSE': Epoch_Train_RMSE,
+                'MAE': Epoch_Train_MAE
+            }, global_step)
 
             # EWC：每段后更新快照+Fisher
             if mode == 'seq_ewc':
                 ewc.consolidate()
                 ewc.estimate_fisher(loader, self.BP_Loss_Fun)
-            # ===== Priority-1: val check per CL batch (default) =====
+            # 每个 CL batch 结束后，如果设置了 val_check='batch'，则评估一次验证集并判断是否早停
             if (val_loader is not None) and (val_check == 'batch'):
                 if _eval_val_and_maybe_update(tag=f'after_batch{k+1}'):
                     stopped_early = True

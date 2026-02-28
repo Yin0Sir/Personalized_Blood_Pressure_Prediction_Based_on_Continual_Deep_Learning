@@ -116,7 +116,7 @@ if __name__ == '__main__':
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    TimeID = datetime.now().strftime('%Y_%m%d_%H%M%S')
+    TimeID = datetime.now().strftime('%H%M%S')
     
     # 1. 数据准备
     signals, labels, user2idx_sorted = load_and_sort_user_data(mat_path, target)
@@ -134,8 +134,8 @@ if __name__ == '__main__':
         idx_sorted = user2idx_sorted[user_id]
         train_idx, val_idx, test_idx = split_user_stream(idx_sorted)
         batch_idx_list = split_train_to_batches(train_idx, K=4)
-        val_loader  = data.DataLoader(CLDataset(signals[val_idx],  labels[val_idx]),  batch_size=8, shuffle=False)
-        test_loader = data.DataLoader(CLDataset(signals[test_idx], labels[test_idx]), batch_size=8, shuffle=False)
+        val_loader  = data.DataLoader(CLDataset(signals[val_idx],  labels[val_idx]),  batch_size=16, shuffle=False)
+        test_loader = data.DataLoader(CLDataset(signals[test_idx], labels[test_idx]), batch_size=16, shuffle=False)
         batch_loaders = [data.DataLoader(CLDataset(signals[b], labels[b]), batch_size=8, shuffle=False) for b in batch_idx_list]
         
         user_res = {'user_id': user_id}
@@ -160,7 +160,7 @@ if __name__ == '__main__':
 
             Settings = {
                 'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4, betas=(0.9, 0.999), weight_decay=0)",
-                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=20, save_states=False, save_final=False, timeid=TimeID)"
+                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=16, num_epochs=20, save_states=False, save_final=False, timeid=TimeID)"
             }
             BP_optimizer = eval(Settings['BP_optimizer'])
             model_trainer = eval(Settings['trainer'])
