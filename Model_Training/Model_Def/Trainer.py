@@ -500,51 +500,88 @@ class Model_Trainer:
         Writer.close()
         return result_dict
 
-# 持续学习 EWC 正则化器
+# 持续学习 EWC 正则化器 # ===== Replace your EWCRegularizer in Trainer.py with this version =====
 class EWCRegularizer:
     def __init__(self, model, param_filter_fn, device='cuda'):
         self.model = model
         self.param_filter_fn = param_filter_fn
         self.device = device
         self.theta_star = {}
-        self.fisher = {}
+        self.fisher = {}   # online fisher (EMA)
 
     def consolidate(self):
-        """保存当前模型参数的快照"""
+        """保存当前任务结束后的最优参数快照 θ*"""
         self.theta_star = {}
         for name, param in self.model.named_parameters():
             if self.param_filter_fn(name) and param.requires_grad:
-                self.theta_star[name] = param.data.clone().detach()
+                self.theta_star[name] = param.detach().clone()
 
-    def estimate_fisher(self, dataloader, loss_fn, max_batches=50):
-        """估计 Fisher 信息矩阵"""
-        self.fisher = {}
+    def estimate_fisher(
+        self,
+        dataloader,
+        loss_fn,
+        max_batches=200,      # ✅ 建议从 50 提高到 200（或按任务大小比例）
+        gamma=0.95,           # ✅ Online EWC: F <- gamma*F + F_new
+        damping=1e-8,         # ✅ 防止 fisher 为 0 导致正则无效
+        use_eval_mode=True,   # ✅ eval 模式估 fisher，减少 BN/Dropout 噪声
+    ):
+        """估计当前任务的 Fisher 对角阵，并与历史 Fisher 做 EMA 累积"""
+        # 1) 初始化本任务 fisher_new
+        fisher_new = {}
         for name, param in self.model.named_parameters():
             if self.param_filter_fn(name) and param.requires_grad:
-                self.fisher[name] = torch.zeros_like(param.data).to(self.device)
+                fisher_new[name] = torch.zeros_like(param, device=self.device)
 
-        self.model.train()
+        # 2) 估 Fisher 时，尽量别让 BN 更新 running stats
+        was_training = self.model.training
+        if use_eval_mode:
+            self.model.eval()
+        else:
+            self.model.train()
+
         batch_count = 0
         for inputs, targets in dataloader:
-            if batch_count >= max_batches: break
-            inputs, targets = inputs.float().to(self.device), targets.float().to(self.device)
-            self.model.zero_grad()
+            if batch_count >= max_batches:
+                break
+            inputs = inputs.float().to(self.device)
+            targets = targets.float().to(self.device)
+
+            self.model.zero_grad(set_to_none=True)
             outputs = self.model(inputs)
             loss = loss_fn(outputs, targets)
             loss.backward()
-            
+
             for name, param in self.model.named_parameters():
-                if self.param_filter_fn(name) and param.requires_grad:
-                    if param.grad is not None:
-                        self.fisher[name] += param.grad.data ** 2
+                if self.param_filter_fn(name) and param.requires_grad and param.grad is not None:
+                    fisher_new[name] += (param.grad.detach() ** 2)
+
             batch_count += 1
-            
-        for name in self.fisher:
-            self.fisher[name] /= float(batch_count if batch_count > 0 else 1)
-        self.model.zero_grad()
+
+        denom = float(batch_count if batch_count > 0 else 1.0)
+        for name in fisher_new:
+            fisher_new[name] = fisher_new[name] / denom
+            fisher_new[name] = fisher_new[name] + damping  # ✅ 避免全 0
+
+        # 3) Online EWC: 与历史 fisher 做 EMA 累积
+        if len(self.fisher) == 0:
+            self.fisher = fisher_new
+        else:
+            for name in fisher_new:
+                if name in self.fisher:
+                    self.fisher[name] = gamma * self.fisher[name] + fisher_new[name]
+                else:
+                    self.fisher[name] = fisher_new[name]
+
+        # 4) 还原训练状态
+        if was_training:
+            self.model.train()
+        else:
+            self.model.eval()
+
+        self.model.zero_grad(set_to_none=True)
 
     def ewc_loss(self):
-        """计算 EWC 正则化损失"""
+        """EWC penalty: Σ_i F_i (θ_i - θ*_i)^2"""
         loss = 0.0
         for name, param in self.model.named_parameters():
             if self.param_filter_fn(name) and param.requires_grad:
