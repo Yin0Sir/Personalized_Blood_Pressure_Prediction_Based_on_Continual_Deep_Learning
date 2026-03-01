@@ -123,10 +123,10 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID):
 
     # 完整列映射
     cols_to_stat = {
-        "gain_mae": "gain", "forget_ewc": "seq_ewc_forget","forget_ft": "seq_ft_forget",
-        "g_mae": "global_eval_test_mae", "g_rmse": "global_eval_test_rmse", "g_r2": "global_eval_test_r2",
-        "ft_mae": "seq_ft_test_mae", "ft_rmse": "seq_ft_test_rmse", "ft_r2": "seq_ft_test_r2",
-        "ewc_mae": "seq_ewc_test_mae", "ewc_rmse": "seq_ewc_test_rmse", "ewc_r2": "seq_ewc_test_r2",
+        "gain_mae": "gain", "forget_ewc": "seq_ewc_forget", "forget_ft": "seq_ft_forget",
+        "g_me": "global_eval_test_me", "g_sd": "global_eval_test_sd", "g_mae": "global_eval_test_mae", "g_rmse": "global_eval_test_rmse", "g_r2": "global_eval_test_r2",
+        "ft_me": "seq_ft_test_me", "ft_sd": "seq_ft_test_sd", "ft_mae": "seq_ft_test_mae", "ft_rmse": "seq_ft_test_rmse", "ft_r2": "seq_ft_test_r2",
+        "ewc_me": "seq_ewc_test_me", "ewc_sd": "seq_ewc_test_sd", "ewc_mae": "seq_ewc_test_mae", "ewc_rmse": "seq_ewc_test_rmse", "ewc_r2": "seq_ewc_test_r2",
         "trainable_params": "trainable_params",
     }
     
@@ -172,6 +172,12 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID):
     print(f"Gain(MAE) median[IQR]: {stats['columns'].get('gain_mae', {}).get('median', float('nan')):.3f} [{stats['columns'].get('gain_mae', {}).get('iqr', float('nan')):.3f}]")
     print(f"Forget_ft mean±std: {stats['columns'].get('forget_ft', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('forget_ft', {}).get('std', float('nan')):.3f}")
     print(f"Forget_ewc mean±std: {stats['columns'].get('forget_ewc', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('forget_ewc', {}).get('std', float('nan')):.3f}")
+    print(f"G_ME mean±std: {stats['columns'].get('g_me', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('g_me', {}).get('std', float('nan')):.3f} ")
+    print(f"G_SD mean±std: {stats['columns'].get('g_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('g_sd', {}).get('std', float('nan')):.3f}")
+    print(f"ft_ME mean±std: {stats['columns'].get('ft_me', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ft_me', {}).get('std', float('nan')):.3f} ")
+    print(f"ft_SD mean±std: {stats['columns'].get('ft_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ft_sd', {}).get('std', float('nan')):.3f}")
+    print(f"ewc_ME mean±std: {stats['columns'].get('ewc_me', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ewc_me', {}).get('std', float('nan')):.3f} ")
+    print(f"ewc_SD mean±std: {stats['columns'].get('ewc_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ewc_sd', {}).get('std', float('nan')):.3f}")
 
 if __name__ == '__main__':
     Seed(6)
@@ -235,9 +241,9 @@ if __name__ == '__main__':
                 
         # 计算结果差异
         user_res['gain'] = user_res.get('global_eval_test_mae', 0) - user_res.get('seq_ewc_test_mae', 0)
-        g_mae, g_rmse, g_r2 = user_res.get('global_eval_test_mae', float('nan')), user_res.get('global_eval_test_rmse', float('nan')), user_res.get('global_eval_test_r2', float('nan'))
-        ft_mae, ft_rmse, ft_r2 = user_res.get('seq_ft_test_mae', float('nan')), user_res.get('seq_ft_test_rmse', float('nan')), user_res.get('seq_ft_test_r2', float('nan'))
-        ewc_mae, ewc_rmse, ewc_r2 = user_res.get('seq_ewc_test_mae', float('nan')), user_res.get('seq_ewc_test_rmse', float('nan')), user_res.get('seq_ewc_test_r2', float('nan'))
+        g_me, g_sd, g_mae, g_rmse, g_r2 = user_res.get('global_eval_test_me', float('nan')), user_res.get('global_eval_test_sd', float('nan')), user_res.get('global_eval_test_mae', float('nan')), user_res.get('global_eval_test_rmse', float('nan')), user_res.get('global_eval_test_r2', float('nan'))
+        ft_me, ft_sd, ft_mae, ft_rmse, ft_r2 = user_res.get('seq_ft_test_me', float('nan')), user_res.get('seq_ft_test_sd', float('nan')), user_res.get('seq_ft_test_mae', float('nan')), user_res.get('seq_ft_test_rmse', float('nan')), user_res.get('seq_ft_test_r2', float('nan'))
+        ewc_me, ewc_sd, ewc_mae, ewc_rmse, ewc_r2 = user_res.get('seq_ewc_test_me', float('nan')), user_res.get('seq_ewc_test_sd', float('nan')), user_res.get('seq_ewc_test_mae', float('nan')), user_res.get('seq_ewc_test_rmse', float('nan')), user_res.get('seq_ewc_test_r2', float('nan'))
         
         gain_mae = g_mae - ewc_mae
         delta_r2 = ewc_r2 - g_r2
@@ -246,9 +252,9 @@ if __name__ == '__main__':
 
         t_user = time.time() - t_user0
         print(f"{u_idx+1:>3d} | {user_id} | {user_res.get('trainable_params', float('nan'))/1e6:>4.2f} | "
-              f"{g_mae:>5.2f}/{g_rmse:>5.2f}/{g_r2:>6.3f} | "
-              f"{ft_mae:>5.2f}/{ft_rmse:>5.2f}/{ft_r2:>6.3f} | "
-              f"{ewc_mae:>5.2f}/{ewc_rmse:>5.2f}/{ewc_r2:>6.3f} | "
+              f"{g_mae:>5.2f}/{g_me:>5.2f}/{g_sd:>6.3f} | "
+              f"{ft_mae:>5.2f}/{ft_me:>5.2f}/{ft_sd:>6.3f} | "
+              f"{ewc_mae:>5.2f}/{ewc_me:>5.2f}/{ewc_sd:>6.3f} | "
               f"{gain_mae:>8.2f} | {delta_r2:>6.3f} | {seq_ft_forget:>5.2f} | {seq_ewc_forget:>6.2f} | {t_user:>5.1f}")
         all_results.append(user_res)
         
