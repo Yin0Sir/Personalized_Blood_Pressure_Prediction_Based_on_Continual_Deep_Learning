@@ -106,8 +106,56 @@ def set_trainable_by_prefix(model, prefixes):
         if any(name == pref or name.startswith(pref + ".") for pref in prefixes):
             p.requires_grad = True
 
+# 样本级总体统计（不分批次，直接拼接所有样本计算整体指标）
+def _infer_on_loader(model, loader, device):
+    """跑一遍 loader，返回 (y_true, y_pred) 的 1D numpy"""
+    model.eval()
+    ys, ps = [], []
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.float().to(device)
+            p = model(x).detach().cpu().numpy()
+            ys.append(y.numpy())
+            ps.append(p)
+    y_true = np.concatenate(ys, axis=0).reshape(-1).astype(np.float64)
+    y_pred = np.concatenate(ps, axis=0).reshape(-1).astype(np.float64)
+    return y_true, y_pred
+
+def _r2_np(y_true, y_pred):
+    """不依赖 sklearn 的 R2（与 r2_score 等价定义）"""
+    y_true = y_true.astype(np.float64)
+    y_pred = y_pred.astype(np.float64)
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - y_true.mean()) ** 2)
+    if ss_tot < 1e-12:
+        return float('nan')
+    return float(1.0 - ss_res / ss_tot)
+
+def _pooled_metrics(y_true_list, y_pred_list):
+    """输入若干段 y_true/y_pred，拼接后做 pooled(样本级总体) 统计"""
+    if len(y_true_list) == 0:
+        return {}
+    y_true = np.concatenate(y_true_list).reshape(-1).astype(np.float64)
+    y_pred = np.concatenate(y_pred_list).reshape(-1).astype(np.float64)
+    err = y_true - y_pred
+
+    me = float(np.mean(err))
+    sd = float(np.std(err))  # ddof=0，与你 Trainer.py 的 SD() 一致
+    rmse = float(np.sqrt(np.mean(err ** 2)))
+    mae = float(np.mean(np.abs(err)))
+    r2 = _r2_np(y_true, y_pred)
+
+    return {
+        "n_samples": int(err.size),
+        "me": me,
+        "sd": sd,
+        "rmse": rmse,
+        "mae": mae,
+        "r2": r2,
+    }
+
 # 4. 结果保存与统计模块
-def save_and_summarize_results(all_results, output_dir, target, TimeID):
+def save_and_summarize_results(all_results, output_dir, target, TimeID, pooled=None):
     os.makedirs(output_dir, exist_ok=True)
     df = pd.DataFrame(all_results)
     
@@ -161,7 +209,13 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID):
                 "ewc_mae": float(df.loc[idx, "seq_ewc_test_mae"]),
             }
 
-    # 保存
+    # 保存 [新增] pooled（样本级总体 / micro）统计：把所有用户 test 样本拼起来算
+    if pooled is not None:
+        stats["overall"]["pooled_test"] = {}
+        for mode, buf in pooled.items():
+            pm = _pooled_metrics(buf.get("y_true", []), buf.get("y_pred", []))
+            if pm:
+                stats["overall"]["pooled_test"][mode] = pm
     df.to_csv(os.path.join(output_dir, f"summary-{target}-{TimeID}.csv"), index=False)
     with open(os.path.join(output_dir, f"summary-{target}-{TimeID}.json"), "w") as f:
         json.dump(stats, f, indent=4)
@@ -178,6 +232,18 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID):
     print(f"ft_SD mean±std: {stats['columns'].get('ft_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ft_sd', {}).get('std', float('nan')):.3f}")
     print(f"ewc_ME mean±std: {stats['columns'].get('ewc_me', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ewc_me', {}).get('std', float('nan')):.3f} ")
     print(f"ewc_SD mean±std: {stats['columns'].get('ewc_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ewc_sd', {}).get('std', float('nan')):.3f}")
+        # ✅ [新增] 打印 pooled（样本级总体 / micro）统计
+    pooled_block = stats["overall"].get("pooled_test", {})
+    if pooled_block:
+        print("\nPooled test (all samples across all users) [micro]:")
+        for mode in ["global_eval", "seq_ft", "seq_ewc"]:
+            pm = pooled_block.get(mode, None)
+            if pm is None:
+                continue
+            print(
+                f"{mode}: n={pm['n_samples']} | "
+                f"ME={pm['me']:.3f} | SD={pm['sd']:.3f} | RMSE={pm['rmse']:.3f} | MAE={pm['mae']:.3f} | R2={pm['r2']:.3f}"
+            )
 
 if __name__ == '__main__':
     Seed(6)
@@ -196,6 +262,7 @@ if __name__ == '__main__':
     
     all_results = []
     modes = ['global_eval', 'seq_ft', 'seq_ewc']
+    pooled = {m: {"y_true": [], "y_pred": []} for m in modes} # 用于后续整体统计的 pooled 结果容器
     layers_to_unfreeze = UNFREEZE_PRESETS[UNFREEZE_PRESET]
     
     base_model = torch.load(pretrained_model_path, map_location="cpu")
@@ -238,7 +305,10 @@ if __name__ == '__main__':
             )
             for k, v in res.items():
                 if k not in ['user_id', 'mode']: user_res[f"{mode}_{k}"] = v
-                
+            # 收集 pooled(样本级总体) 的 test 预测
+            y_true_m, y_pred_m = _infer_on_loader(model, test_loader, device)
+            pooled[mode]["y_true"].append(y_true_m)
+            pooled[mode]["y_pred"].append(y_pred_m)
         # 计算结果差异
         user_res['gain'] = user_res.get('global_eval_test_mae', 0) - user_res.get('seq_ewc_test_mae', 0)
         g_me, g_sd, g_mae, g_rmse, g_r2 = user_res.get('global_eval_test_me', float('nan')), user_res.get('global_eval_test_sd', float('nan')), user_res.get('global_eval_test_mae', float('nan')), user_res.get('global_eval_test_rmse', float('nan')), user_res.get('global_eval_test_r2', float('nan'))
@@ -259,4 +329,4 @@ if __name__ == '__main__':
         all_results.append(user_res)
         
     # 保存与统计汇总
-    save_and_summarize_results(all_results, './Model_Training/CL_Results', target, TimeID)
+    save_and_summarize_results(all_results, './Model_Training/CL_Results', target, TimeID, pooled=pooled)
