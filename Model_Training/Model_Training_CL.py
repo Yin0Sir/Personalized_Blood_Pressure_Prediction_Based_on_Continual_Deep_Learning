@@ -170,7 +170,7 @@ if __name__ == '__main__':
                 val_check='batch',              # ✅ 每个CL batch后评估一次val
                 rollback_to_best=True,          # ✅ 训练结束回滚到val最优
                 patience=0,                     # ✅ 0=不早停，只回滚（最保守）
-                mode=mode, lambda_ewc=100, trainable_keywords=layers_to_unfreeze,
+                mode=mode, lambda_ewc=500, trainable_keywords=layers_to_unfreeze,
                 verbose=0, show_progress=False
             )
             # 收录该模式结果
