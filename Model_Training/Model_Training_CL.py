@@ -123,7 +123,7 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID):
 
     # 完整列映射
     cols_to_stat = {
-        "gain_mae": "gain", "forget": "seq_ewc_forget",
+        "gain_mae": "gain", "forget_ewc": "seq_ewc_forget","forget_ft": "seq_ft_forget",
         "g_mae": "global_eval_test_mae", "g_rmse": "global_eval_test_rmse", "g_r2": "global_eval_test_r2",
         "ft_mae": "seq_ft_test_mae", "ft_rmse": "seq_ft_test_rmse", "ft_r2": "seq_ft_test_r2",
         "ewc_mae": "seq_ewc_test_mae", "ewc_rmse": "seq_ewc_test_rmse", "ewc_r2": "seq_ewc_test_r2",
@@ -170,7 +170,8 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID):
     print(f"\nUsers: {stats['overall'].get('n_users', len(df))} | Improve rate(MAE): {stats['overall'].get('improve_rate_mae', float('nan')):.3f}")
     print(f"Gain(MAE) mean±std: {stats['columns'].get('gain_mae', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('gain_mae', {}).get('std', float('nan')):.3f}")
     print(f"Gain(MAE) median[IQR]: {stats['columns'].get('gain_mae', {}).get('median', float('nan')):.3f} [{stats['columns'].get('gain_mae', {}).get('iqr', float('nan')):.3f}]")
-    print(f"Forget mean±std: {stats['columns'].get('forget', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('forget', {}).get('std', float('nan')):.3f}")
+    print(f"Forget_ft mean±std: {stats['columns'].get('forget_ft', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('forget_ft', {}).get('std', float('nan')):.3f}")
+    print(f"Forget_ewc mean±std: {stats['columns'].get('forget_ewc', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('forget_ewc', {}).get('std', float('nan')):.3f}")
 
 if __name__ == '__main__':
     Seed(6)
@@ -193,8 +194,8 @@ if __name__ == '__main__':
     
     base_model = torch.load(pretrained_model_path, map_location="cpu")
     base_state = {k: v.clone() for k, v in base_model.state_dict().items()}
-    print("UNFREEZE_PRESET:", UNFREEZE_PRESET, "->", layers_to_unfreeze)
-    print("\nidx | user_id | P(M) | G(MAE/RMSE/R2) | FT(MAE/RMSE/R2) | EWC(MAE/RMSE/R2) | gain_mae | dR2 | forget | t(s)")
+    print("解冻层:", UNFREEZE_PRESET, "->", layers_to_unfreeze)
+    print("idx | user_id | P(M) | G(MAE/RMSE/R2) | FT(MAE/RMSE/R2) | EWC(MAE/RMSE/R2) | gain_mae | dR2 | seq_ft_forget | seq_ewc_forget | t(s)")
 
     # 批量跑实验
     for u_idx, user_id in enumerate(selected_users):
@@ -240,14 +241,15 @@ if __name__ == '__main__':
         
         gain_mae = g_mae - ewc_mae
         delta_r2 = ewc_r2 - g_r2
-        forget = user_res.get('seq_ewc_forget', float('nan'))
-        # 打印当前用户摘要
+        seq_ft_forget = user_res.get('seq_ft_forget', float('nan'))
+        seq_ewc_forget = user_res.get('seq_ewc_forget', float('nan'))
+
         t_user = time.time() - t_user0
         print(f"{u_idx+1:>3d} | {user_id} | {user_res.get('trainable_params', float('nan'))/1e6:>4.2f} | "
               f"{g_mae:>5.2f}/{g_rmse:>5.2f}/{g_r2:>6.3f} | "
               f"{ft_mae:>5.2f}/{ft_rmse:>5.2f}/{ft_r2:>6.3f} | "
               f"{ewc_mae:>5.2f}/{ewc_rmse:>5.2f}/{ewc_r2:>6.3f} | "
-              f"{gain_mae:>8.2f} | {delta_r2:>6.3f} | {forget:>6.2f} | {t_user:>5.1f}")
+              f"{gain_mae:>8.2f} | {delta_r2:>6.3f} | {seq_ft_forget:>5.2f} | {seq_ewc_forget:>6.2f} | {t_user:>5.1f}")
         all_results.append(user_res)
         
     # 保存与统计汇总
