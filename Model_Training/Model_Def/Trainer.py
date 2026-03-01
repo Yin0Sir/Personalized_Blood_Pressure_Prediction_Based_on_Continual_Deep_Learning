@@ -264,10 +264,10 @@ class Model_Trainer:
         all_preds, all_labels = [], []
         with torch.no_grad():
             for inputs, labels in loader:
-                inputs = inputs.float().to(self.Device)
+                inputs, labels = inputs.float().to(self.Device), labels.float().to(self.Device)
                 preds = self.Model_Running(inputs)
                 all_preds.append(preds.cpu().detach().numpy())
-                all_labels.append(labels.numpy())
+                all_labels.append(labels.cpu().detach().numpy())
                 
         all_preds = np.concatenate(all_preds, axis=0)
         all_labels = np.concatenate(all_labels, axis=0)
@@ -291,145 +291,94 @@ class Model_Trainer:
         show_progress=False,  # True 才显示 progressbar
 ):
         TimeID = self.TimeID
-        Writer = SW(os.path.join(os.path.join('Model_Training/TensorBoard/CL_Experiments', TimeID), f"_{mode}"))
+        Writer = SW(os.path.join(f'Model_Training/TensorBoard/CL_Experiments/{TimeID}', f"_{mode}"))
 
-        if verbose >= 1:
-            print(f"[{user_id}] {mode} ...")
-
+        if verbose >= 1: print(f"[{user_id}] {mode} ...")
         result_dict = {'user_id': user_id, 'mode': mode}
 
+        # 模式1: 全局直接评估 (不训练)
         if mode == 'global_eval':
             loss, r2, me, sd, rmse, mae = self.Evaluate_Loader(test_loader)
-            result_dict.update({
-                'test_loss': loss,
-                'test_r2': r2,
-                'test_me': me,
-                'test_sd': sd,
-                'test_rmse': rmse,
-                'test_mae': mae,
-            })
+            result_dict.update({'test_loss': loss, 'test_r2': r2, 'test_me': me, 'test_sd': sd, 'test_rmse': rmse, 'test_mae': mae})
             Writer.close()
             return result_dict
         
-        if trainable_keywords is None:
-            trainable_keywords = head_keywords if head_keywords is not None else ["final_fc"]
-
-        # 2) seq_ft / seq_ewc：顺序训练
+        # 模式2: 持续学习 (seq_ft / seq_ewc)
+        trainable_keywords = trainable_keywords or head_keywords or ["final_fc"]
         filter_fn = lambda name: any(name == pref or name.startswith(pref + ".") for pref in trainable_keywords)
         ewc = EWCRegularizer(self.Model_Running, filter_fn, self.Device)
+        
         global_step = 1
-        cl_batch_loss_mean = []
-        b1_mae_hist = []
-        all_train_losses = []
-        # 验证集+初始化早停标志和最佳模型跟踪
-        best_val_mae = float('inf')
-        best_state = None
-        best_tag = None
-        no_improve = 0
+        cl_batch_loss_mean, b1_mae_hist, all_train_losses = [], [], []
+        best_val_mae, best_state, best_tag, no_improve = float('inf'), None, None, 0
         stopped_early = False
 
         def _eval_val_and_maybe_update(tag: str):
-            """返回 True 表示触发 early-stop（仅 patience>0 时可能触发）"""
+            """内部验证与早停逻辑"""
             nonlocal best_val_mae, best_state, best_tag, no_improve
-            if val_loader is None:
-                return False
-
+            if val_loader is None: return False
             v_loss, v_r2, v_me, v_sd, v_rmse, v_mae = self.Evaluate_Loader(val_loader)
             result_dict[f'val_mae_{tag}'] = float(v_mae)
 
             if (v_mae + min_delta) < best_val_mae:
-                best_val_mae = float(v_mae)
-                best_tag = tag
+                best_val_mae, best_tag, no_improve = float(v_mae), tag, 0
                 best_state = {k: v.detach().cpu().clone() for k, v in self.Model_Running.state_dict().items()}
-                no_improve = 0
             else:
                 no_improve += 1
-
             return (patience > 0 and no_improve >= patience)
         
+        # --- 遍历 CL Batches ---
         for k, loader in enumerate(batch_loaders):
-            # 统计该 CL batch 的平均训练 loss（不刷进度条）
             batch_losses = []
-            for Epoch in range(1, self.Num_Epoch + 1):  # Num_Epoch 视作 epochs_per_batch
+            
+            for Epoch in range(1, self.Num_Epoch + 1):
                 self.Model_Running.train()
-                # collect per-epoch predictions/labels for metrics
-                Epoch_BP_Labels = []
-                Epoch_BP_Preds = []
+                Epoch_BP_Labels, Epoch_BP_Preds = [], []
+                
+                # 配置进度条或普通迭代器
+                iterator = PB.ProgressBar(widgets=widgets, max_value=len(loader))(loader) if show_progress else loader
+                
+                for i, (inputs, labels) in enumerate(iterator):
+                    inputs, labels = inputs.float().to(self.Device), labels.float().to(self.Device)
+                    self.Optimizer_BP.zero_grad()
+                    outputs = self.Model_Running(inputs)
+                    
+                    Epoch_BP_Labels.append(labels.cpu().detach().numpy())
+                    Epoch_BP_Preds.append(outputs.cpu().detach().numpy())
+                    loss = self.BP_Loss_Fun(outputs, labels)
 
-                if show_progress:
-                    with PB.ProgressBar(widgets=widgets, max_value=len(loader)) as bar:
-                        for i, (inputs, labels) in enumerate(loader):
-                            inputs, labels = inputs.float().to(self.Device), labels.float().to(self.Device)
+                    if mode == 'seq_ewc' and k > 0:
+                        loss += lambda_ewc * ewc.ewc_loss()
 
-                            self.Optimizer_BP.zero_grad()
-                            outputs = self.Model_Running(inputs)
-                            # collect preds/labels for this epoch
-                            Epoch_BP_Labels.append(labels.cpu().detach().numpy())
-                            Epoch_BP_Preds.append(outputs.cpu().detach().numpy())
-                            loss = self.BP_Loss_Fun(outputs, labels)
+                    loss.backward()
+                    self.Optimizer_BP.step()
+                    batch_losses.append(loss.item())
 
-                            if mode == 'seq_ewc' and k > 0:
-                                loss += lambda_ewc * ewc.ewc_loss()
+                    if not global_step % 5:
+                        Writer.add_scalar(f'CL_Loss/Batch_{k+1}', loss.item(), global_step)
+                    global_step += 1
+                    
+                    if show_progress: iterator.update(i, Batch_BP_Loss=loss.item())
 
-                            loss.backward()
-                            self.Optimizer_BP.step()
+                # Epoch级别的早停检查
+                if val_loader and val_check == 'epoch' and _eval_val_and_maybe_update(f'after_b{k+1}_e{Epoch}'):
+                    stopped_early = True; break
 
-                            batch_losses.append(loss.item())
-
-                            if not global_step % 5:
-                                Writer.add_scalar(f'CL_Loss/Batch_{k+1}', loss.item(), global_step)
-                            global_step += 1
-
-                            bar.update(i, Batch_BP_Loss=loss.item())
-                else:
-                    for (inputs, labels) in loader:
-                        inputs, labels = inputs.float().to(self.Device), labels.float().to(self.Device)
-
-                        self.Optimizer_BP.zero_grad()
-                        outputs = self.Model_Running(inputs)
-                        # collect preds/labels for this epoch
-                        Epoch_BP_Labels.append(labels.cpu().detach().numpy())
-                        Epoch_BP_Preds.append(outputs.cpu().detach().numpy())
-                        loss = self.BP_Loss_Fun(outputs, labels)
-
-                        if mode == 'seq_ewc' and k > 0:
-                            loss += lambda_ewc * ewc.ewc_loss()
-
-                        loss.backward()
-                        self.Optimizer_BP.step()
-
-                        batch_losses.append(loss.item())
-
-                        if not global_step % 5:
-                            Writer.add_scalar(f'CL_Loss/Batch_{k+1}', loss.item(), global_step)
-                        global_step += 1
-
-                # 每个 epoch 后的评估和早停判断
-                if (val_loader is not None) and (val_check == 'epoch'):
-                    if _eval_val_and_maybe_update(tag=f'after_b{k+1}_e{Epoch}'):
-                        stopped_early = True
-                        break
-
-            # epoch 循环若提前停止，则直接跳出 batch 循环
-            if stopped_early:
-                break
+            if stopped_early: break
             # 每个 CL batch 结束：评估 batch1 MAE 作为遗忘监控
-            avg_loss_k = float(np.mean(batch_losses)) if len(batch_losses) else 0.0
-            cl_batch_loss_mean.append(avg_loss_k)
             all_train_losses.extend(batch_losses)
+            cl_batch_loss_mean.append(float(np.mean(batch_losses)) if batch_losses else 0.0)
             _, _, _, _, _, b1_mae = self.Evaluate_Loader(batch_loaders[0])
             b1_mae_hist.append(float(b1_mae))
             # 将每个 epoch 结束时的预测和标签合并，计算所有指标
             Epoch_BP_Labels = np.concatenate(Epoch_BP_Labels, axis=0)
             Epoch_BP_Preds = np.concatenate(Epoch_BP_Preds, axis=0)
-
             # 计算各项指标
             Epoch_Train_R2 = R2(Epoch_BP_Labels, Epoch_BP_Preds)
             Epoch_Train_ME = ME(Epoch_BP_Labels, Epoch_BP_Preds)
             Epoch_Train_SD = SD(Epoch_BP_Labels, Epoch_BP_Preds)
             Epoch_Train_RMSE = RMSE(Epoch_BP_Labels, Epoch_BP_Preds)
             Epoch_Train_MAE = MAE(Epoch_BP_Labels, Epoch_BP_Preds)
-
             # 将训练结果记录到 TensorBoard
             Writer.add_scalars(f'Metrics/Batch_{k+1}', {
                 'R2': Epoch_Train_R2,
@@ -444,15 +393,12 @@ class Model_Trainer:
                 ewc.consolidate()
                 ewc.estimate_fisher(loader, self.BP_Loss_Fun)
             # 每个 CL batch 结束后，如果设置了 val_check='batch'，则评估一次验证集并判断是否早停
-            if (val_loader is not None) and (val_check == 'batch'):
-                if _eval_val_and_maybe_update(tag=f'after_batch{k+1}'):
-                    stopped_early = True
-                    break
+            if val_loader and val_check == 'batch' and _eval_val_and_maybe_update(f'after_batch{k+1}'):
+                stopped_early = True; break
             if verbose >= 2:
                 avg_loss = float(np.mean(batch_losses)) if len(batch_losses) else 0.0
                 print(f"  - CL batch {k+1}/{len(batch_loaders)} | avg_loss {avg_loss:.3f} | b1_mae {b1_mae:.3f}")
-            if stopped_early:
-                break
+
         # ==================== Priority-1: rollback to best val checkpoint ====================
         if rollback_to_best and (best_state is not None):
             self.Model_Running.load_state_dict(best_state, strict=True)
@@ -464,14 +410,7 @@ class Model_Trainer:
 
         # 3) 最终 test 评估
         test_loss, test_r2, test_me, test_sd, test_rmse, test_mae = self.Evaluate_Loader(test_loader)
-        result_dict.update({
-            'test_loss': test_loss,
-            'test_r2': test_r2,
-            'test_me': test_me,
-            'test_sd': test_sd,
-            'test_rmse': test_rmse,
-            'test_mae': test_mae,
-        })
+        result_dict.update({'test_loss': test_loss, 'test_r2': test_r2, 'test_me': test_me, 'test_sd': test_sd, 'test_rmse': test_rmse, 'test_mae': test_mae})
 
         # 额外：CL过程统计（尽可能全）
         result_dict['cl_train_loss_mean'] = float(np.mean(all_train_losses)) if len(all_train_losses) else 0.0
@@ -494,7 +433,7 @@ class Model_Trainer:
         Writer.close()
         return result_dict
 
-# 持续学习 EWC 正则化器 # ===== Replace your EWCRegularizer in Trainer.py with this version =====
+# 持续学习 EWC 正则化器 
 class EWCRegularizer:
     def __init__(self, model, param_filter_fn, device='cuda'):
         self.model = model
@@ -541,37 +480,29 @@ class EWCRegularizer:
             targets = targets.float().to(self.device)
 
             self.model.zero_grad(set_to_none=True)
-            outputs = self.model(inputs)
-            loss = loss_fn(outputs, targets)
-            loss.backward()
+            loss_fn(self.model(inputs), targets).backward()
 
             for name, param in self.model.named_parameters():
                 if self.param_filter_fn(name) and param.requires_grad and param.grad is not None:
                     fisher_new[name] += (param.grad.detach() ** 2)
-
             batch_count += 1
 
-        denom = float(batch_count if batch_count > 0 else 1.0)
+        denom = float(max(batch_count, 1.0))
         for name in fisher_new:
-            fisher_new[name] = fisher_new[name] / denom
-            fisher_new[name] = fisher_new[name] + damping  # ✅ 避免全 0
+            fisher_new[name] = (fisher_new[name] / denom) + damping  # ✅ 避免全 0
 
         # 3) Online EWC: 与历史 fisher 做 EMA 累积
         if len(self.fisher) == 0:
             self.fisher = fisher_new
         else:
             for name in fisher_new:
-                if name in self.fisher:
-                    self.fisher[name] = gamma * self.fisher[name] + fisher_new[name]
-                else:
-                    self.fisher[name] = fisher_new[name]
+                self.fisher[name] = gamma * self.fisher.get(name, 0) + fisher_new[name]
 
         # 4) 还原训练状态
         if was_training:
             self.model.train()
         else:
             self.model.eval()
-
         self.model.zero_grad(set_to_none=True)
 
     def ewc_loss(self):
