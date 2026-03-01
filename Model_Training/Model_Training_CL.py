@@ -220,7 +220,7 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID, pooled=N
     with open(os.path.join(output_dir, f"summary-{target}-{TimeID}.json"), "w") as f:
         json.dump(stats, f, indent=4)
 
-    # 打印最终统计摘要
+    # 打印 用户级 macro 统计
     print(f"\nUsers: {stats['overall'].get('n_users', len(df))} | Improve rate(MAE): {stats['overall'].get('improve_rate_mae', float('nan')):.3f}")
     print(f"Gain(MAE) mean±std: {stats['columns'].get('gain_mae', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('gain_mae', {}).get('std', float('nan')):.3f}")
     print(f"Gain(MAE) median[IQR]: {stats['columns'].get('gain_mae', {}).get('median', float('nan')):.3f} [{stats['columns'].get('gain_mae', {}).get('iqr', float('nan')):.3f}]")
@@ -232,7 +232,7 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID, pooled=N
     print(f"ft_SD mean±std: {stats['columns'].get('ft_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ft_sd', {}).get('std', float('nan')):.3f}")
     print(f"ewc_ME mean±std: {stats['columns'].get('ewc_me', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ewc_me', {}).get('std', float('nan')):.3f} ")
     print(f"ewc_SD mean±std: {stats['columns'].get('ewc_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ewc_sd', {}).get('std', float('nan')):.3f}")
-        # ✅ [新增] 打印 pooled（样本级总体 / micro）统计
+    # 打印 pooled（样本级总体 / micro）统计
     pooled_block = stats["overall"].get("pooled_test", {})
     if pooled_block:
         print("\nPooled test (all samples across all users) [micro]:")
@@ -258,7 +258,7 @@ if __name__ == '__main__':
     # 初始化数据
     signals, labels, user2idx_sorted = load_and_sort_user_data(mat_path, target)
     valid_users = [u for u in user2idx_sorted.keys() if len(user2idx_sorted[u]) >= 300]
-    selected_users = random.sample(valid_users, min(10, len(valid_users)))
+    selected_users = random.sample(valid_users, min(1000, len(valid_users)))
     
     all_results = []
     modes = ['global_eval', 'seq_ft', 'seq_ewc']
