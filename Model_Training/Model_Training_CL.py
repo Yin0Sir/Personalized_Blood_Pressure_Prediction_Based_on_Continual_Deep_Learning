@@ -217,8 +217,8 @@ if __name__ == '__main__':
                 user_res['trainable_params'] = count_trainable_params(model)
 
             Settings = {
-                'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-6)",
-                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=20, timeid=TimeID)"
+                'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-6, betas=(0.9, 0.999), weight_decay=0)",
+                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=20, save_states=False, save_final=False, timeid=TimeID)"
             }
             BP_optimizer = eval(Settings['BP_optimizer'])
             model_trainer = eval(Settings['trainer'])
