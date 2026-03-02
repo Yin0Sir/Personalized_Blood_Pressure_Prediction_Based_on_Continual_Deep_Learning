@@ -378,14 +378,14 @@ if __name__ == '__main__':
 
             Settings = {
                 'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-6, betas=(0.9, 0.999), weight_decay=0)",
-                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=20, save_states=False, save_final=False, timeid=TimeID)"
+                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=60, save_states=False, save_final=False, timeid=TimeID)"
             }
             BP_optimizer = eval(Settings['BP_optimizer'])
             model_trainer = eval(Settings['trainer'])
 
             res = model_trainer.Train_CL_Model(
                 user_id, batch_loaders, test_loader, val_loader=val_loader,
-                val_check='batch', rollback_to_best=True, patience=0, 
+                val_check='epoch', rollback_to_best=True, patience=0, 
                 mode=mode, lambda_ewc=500, trainable_keywords=layers_to_unfreeze,
                 buffer_size=64,           # [新增] Memory Buffer 最大容量
                 replay_batch_size=8,       # [新增] 每次训练从 Buffer 中抽取的 batch 大小

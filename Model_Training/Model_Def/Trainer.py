@@ -283,7 +283,7 @@ class Model_Trainer:
     # 持续学习 EWC 主训练范式
     def Train_CL_Model(self, user_id, batch_loaders, test_loader, val_loader=None,
         mode='seq_ewc', lambda_ewc=0, trainable_keywords=None, head_keywords=None,
-        val_check='batch',         # ✅ 'batch' 或 'epoch'
+        val_check='epoch',         # ✅ 'batch' 或 'epoch'
         rollback_to_best=True,     # ✅ 是否回滚到val最佳
         patience=0,                # ✅ 0=不早停；>0支持早停
         min_delta=0.0,             # ✅ val改进阈值
@@ -292,7 +292,17 @@ class Model_Trainer:
         show_progress=False,  # True 才显示 progressbar
 ):
         TimeID = self.TimeID
-        Writer = SW(os.path.join(f'Model_Training/TensorBoard/CL_Experiments/{TimeID}', f"_{mode}"))
+        tb_dir = os.path.join('Model_Training', 'TensorBoard', 'CL_Experiments', TimeID, mode, str(user_id))
+        Writer = SW(tb_dir)
+
+        # 将模型信息写入 TensorBoard（与 Train_Model 格式一致）
+        save_stdout = sys.stdout
+        result = StringIO()
+        sys.stdout = result
+        print('ModelID: '+TimeID[-6:])
+        self.Model_Info()
+        sys.stdout = save_stdout
+        Writer.add_text('Model', result.getvalue().replace('\n', '     \n'))
 
         if verbose >= 1: print(f"[{user_id}] {mode} ...")
         result_dict = {'user_id': user_id, 'mode': mode}
@@ -382,6 +392,36 @@ class Model_Trainer:
                     
                     if show_progress: iterator.update(i, Batch_BP_Loss=loss.item())
 
+                # 计算并记录此 epoch 的训练集指标（按 epoch 作为 x 轴）
+                if len(Epoch_BP_Labels) > 0:
+                    try:
+                        Epoch_BP_Labels_arr = np.concatenate(Epoch_BP_Labels, axis=0)
+                        Epoch_BP_Preds_arr = np.concatenate(Epoch_BP_Preds, axis=0)
+                        E_R2 = R2(Epoch_BP_Labels_arr, Epoch_BP_Preds_arr)
+                        E_ME = ME(Epoch_BP_Labels_arr, Epoch_BP_Preds_arr)
+                        E_SD = SD(Epoch_BP_Labels_arr, Epoch_BP_Preds_arr)
+                        E_RMSE = RMSE(Epoch_BP_Labels_arr, Epoch_BP_Preds_arr)
+                        E_MAE = MAE(Epoch_BP_Labels_arr, Epoch_BP_Preds_arr)
+                        E_loss = self.BP_Loss_Fun(torch.from_numpy(Epoch_BP_Preds_arr), torch.from_numpy(Epoch_BP_Labels_arr))
+
+                        Writer.add_scalars('Loss', {'Train_BP': float(E_loss)}, Epoch)
+                        Writer.add_scalars('R2', {'Train': float(E_R2)}, Epoch)
+                        Writer.add_scalars('ME', {'Train': float(E_ME)}, Epoch)
+                        Writer.add_scalars('SD', {'Train': float(E_SD)}, Epoch)
+                        Writer.add_scalars('RMSE', {'Train': float(E_RMSE)}, Epoch)
+                        Writer.add_scalars('MAE', {'Train': float(E_MAE)}, Epoch)
+
+                        # 为每个 CL batch 创建独立面板（例如在 TensorBoard 中按 Batch_1/LOSS 等分组）
+                        batch_tag = f'Batch_{k+1}'
+                        Writer.add_scalars(f'{batch_tag}/Loss', {'Train_BP': float(E_loss)}, Epoch)
+                        Writer.add_scalars(f'{batch_tag}/R2', {'Train': float(E_R2)}, Epoch)
+                        Writer.add_scalars(f'{batch_tag}/ME', {'Train': float(E_ME)}, Epoch)
+                        Writer.add_scalars(f'{batch_tag}/SD', {'Train': float(E_SD)}, Epoch)
+                        Writer.add_scalars(f'{batch_tag}/RMSE', {'Train': float(E_RMSE)}, Epoch)
+                        Writer.add_scalars(f'{batch_tag}/MAE', {'Train': float(E_MAE)}, Epoch)
+                    except Exception:
+                        pass
+
                 # Epoch级别的早停检查
                 if val_loader and val_check == 'epoch' and _eval_val_and_maybe_update(f'after_b{k+1}_e{Epoch}'):
                     stopped_early = True; break
@@ -401,14 +441,20 @@ class Model_Trainer:
             Epoch_Train_SD = SD(Epoch_BP_Labels, Epoch_BP_Preds)
             Epoch_Train_RMSE = RMSE(Epoch_BP_Labels, Epoch_BP_Preds)
             Epoch_Train_MAE = MAE(Epoch_BP_Labels, Epoch_BP_Preds)
-            # 将训练结果记录到 TensorBoard
-            Writer.add_scalars(f'Metrics/Batch_{k+1}', {
-                'R2': Epoch_Train_R2,
-                'ME': Epoch_Train_ME,
-                'SD': Epoch_Train_SD,
-                'RMSE': Epoch_Train_RMSE,
-                'MAE': Epoch_Train_MAE
-            }, global_step)
+            # 将训练结果以规范化字典写入 TensorBoard（与 Train_Model 的格式一致）
+            Writer_Loss_Dict = {'Train_BP': float(np.mean(batch_losses)) if batch_losses else 0.0}
+            Writer_R2_Dict = {'Train': float(Epoch_Train_R2)}
+            Writer_ME_Dict = {'Train': float(Epoch_Train_ME)}
+            Writer_SD_Dict = {'Train': float(Epoch_Train_SD)}
+            Writer_RMSE_Dict = {'Train': float(Epoch_Train_RMSE)}
+            Writer_MAE_Dict = {'Train': float(Epoch_Train_MAE)}
+            # 以全局步数为 x 轴记录
+            Writer.add_scalars('Loss', Writer_Loss_Dict, global_step)
+            Writer.add_scalars('R2', Writer_R2_Dict, global_step)
+            Writer.add_scalars('ME', Writer_ME_Dict, global_step)
+            Writer.add_scalars('SD', Writer_SD_Dict, global_step)
+            Writer.add_scalars('RMSE', Writer_RMSE_Dict, global_step)
+            Writer.add_scalars('MAE', Writer_MAE_Dict, global_step)
 
             # EWC：每段后更新快照+Fisher  任务结束后更新 EWC 参数 和 Buffer
             if use_ewc:
