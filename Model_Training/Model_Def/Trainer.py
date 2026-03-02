@@ -287,6 +287,7 @@ class Model_Trainer:
         rollback_to_best=True,     # ✅ 是否回滚到val最佳
         patience=0,                # ✅ 0=不早停；>0支持早停
         min_delta=0.0,             # ✅ val改进阈值
+        buffer_size=200, replay_batch_size=8, alpha_replay=1.0, # [新增] Replay 参数
         verbose=0,            # 0: 不打印; 1: 仅打印开始/结束; 2: 打印每个CL batch摘要
         show_progress=False,  # True 才显示 progressbar
 ):
@@ -304,10 +305,19 @@ class Model_Trainer:
             return result_dict
         
         # 模式2: 持续学习 (seq_ft / seq_ewc)
-        trainable_keywords = trainable_keywords or head_keywords or ["final_fc"]
-        filter_fn = lambda name: any(name == pref or name.startswith(pref + ".") for pref in trainable_keywords)
-        ewc = EWCRegularizer(self.Model_Running, filter_fn, self.Device)
-        
+        # [新增] 解析当前模式需要启用哪些机制
+        use_ewc = mode in ['seq_ewc', 'seq_hybrid']
+        use_replay = mode in ['seq_replay', 'seq_hybrid']
+
+        # [新增] 初始化 EWC 和 Replay Buffer
+        if use_ewc:
+            trainable_keywords = trainable_keywords or head_keywords or ["final_fc"]
+            filter_fn = lambda name: any(name == pref or name.startswith(pref + ".") for pref in trainable_keywords)
+            ewc = EWCRegularizer(self.Model_Running, filter_fn, self.Device)
+            
+        if use_replay:
+            replay_buffer = ReplayBuffer(capacity=buffer_size, device=self.Device)
+
         global_step = 1
         cl_batch_loss_mean, b1_mae_hist, all_train_losses = [], [], []
         best_val_mae, best_state, best_tag, no_improve = float('inf'), None, None, 0
@@ -345,10 +355,22 @@ class Model_Trainer:
                     
                     Epoch_BP_Labels.append(labels.cpu().detach().numpy())
                     Epoch_BP_Preds.append(outputs.cpu().detach().numpy())
+
                     loss = self.BP_Loss_Fun(outputs, labels)
 
-                    if mode == 'seq_ewc' and k > 0:
+                    # 2. [新增] 加上 EWC 约束惩罚 (仅从第二个任务开始)
+                    if use_ewc and k > 0:
                         loss += lambda_ewc * ewc.ewc_loss()
+
+                    # 3. [新增] 加上 Replay Loss (仅从第二个任务开始)
+                    if use_replay and k > 0:
+                        buf_inputs, buf_labels = replay_buffer.sample(replay_batch_size)
+                        if buf_inputs is not None:
+                            buf_inputs = buf_inputs.float().to(self.Device)
+                            buf_labels = buf_labels.float().to(self.Device)
+                            buf_outputs = self.Model_Running(buf_inputs)
+                            replay_loss = self.BP_Loss_Fun(buf_outputs, buf_labels)
+                            loss += alpha_replay * replay_loss
 
                     loss.backward()
                     self.Optimizer_BP.step()
@@ -388,10 +410,17 @@ class Model_Trainer:
                 'MAE': Epoch_Train_MAE
             }, global_step)
 
-            # EWC：每段后更新快照+Fisher
-            if mode == 'seq_ewc':
+            # EWC：每段后更新快照+Fisher  任务结束后更新 EWC 参数 和 Buffer
+            if use_ewc:
                 ewc.consolidate()
                 ewc.estimate_fisher(loader, self.BP_Loss_Fun)
+                
+            if use_replay:
+                # 每个任务结束后，均匀分配 Buffer 容量，提取新数据存入
+                # 比如总共 K 个任务，每个任务存 capacity // K 个样本
+                samples_to_add = max(1, buffer_size // len(batch_loaders))
+                replay_buffer.add_data(loader, samples_to_add)
+
             # 每个 CL batch 结束后，如果设置了 val_check='batch'，则评估一次验证集并判断是否早停
             if val_loader and val_check == 'batch' and _eval_val_and_maybe_update(f'after_batch{k+1}'):
                 stopped_early = True; break
@@ -432,6 +461,53 @@ class Model_Trainer:
 
         Writer.close()
         return result_dict
+
+# 记忆缓冲区类 (Replay Buffer)
+class ReplayBuffer:
+    def __init__(self, capacity, device):
+        self.capacity = capacity
+        self.device = device
+        self.inputs = []
+        self.labels = []
+    
+    def add_data(self, loader, num_samples):
+        """从当前 loader 中随机提取 num_samples 个样本加入 Buffer"""
+        new_inputs, new_labels = [], []
+        for x, y in loader:
+            new_inputs.append(x.float())
+            new_labels.append(y.float())
+        new_inputs = torch.cat(new_inputs, dim=0)
+        new_labels = torch.cat(new_labels, dim=0)
+
+        # 随机采样
+        indices = torch.randperm(len(new_inputs))[:num_samples]
+        self.inputs.append(new_inputs[indices].to(self.device))
+        self.labels.append(new_labels[indices].to(self.device))
+
+        # 拼接并限制容量 (Reservoir Sampling 的简单替代方案)
+        all_inputs = torch.cat(self.inputs, dim=0)
+        all_labels = torch.cat(self.labels, dim=0)
+
+        if len(all_inputs) > self.capacity:
+            # 如果超出容量，随机丢弃旧数据，保留 capacity 大小
+            indices = torch.randperm(len(all_inputs))[:self.capacity]
+            all_inputs = all_inputs[indices]
+            all_labels = all_labels[indices]
+
+        self.inputs = [all_inputs]
+        self.labels = [all_labels]
+
+    def sample(self, batch_size):
+        """随机采样一个 batch 用于回放"""
+        if len(self.inputs) == 0 or len(self.inputs[0]) == 0:
+            return None, None
+        inputs_tensor = self.inputs[0]
+        labels_tensor = self.labels[0]
+        curr_size = len(inputs_tensor)
+        batch_size = min(batch_size, curr_size)
+        
+        indices = torch.randperm(curr_size)[:batch_size]
+        return inputs_tensor[indices], labels_tensor[indices]
 
 # 持续学习 EWC 正则化器 
 class EWCRegularizer:

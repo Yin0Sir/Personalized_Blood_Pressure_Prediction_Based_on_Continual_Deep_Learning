@@ -169,44 +169,86 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID, pooled=N
             "iqr": float(s.quantile(0.75) - s.quantile(0.25)),
         }
 
-    # 完整列映射
+    # === 动态列映射：自适应 mode 数量与名称 ===
+    # 约定：每个 mode 的指标以 "{mode}_{metric}" 命名（例如 global_eval_test_mae）, 其中 metric 常见为：test_me/test_sd/test_mae/test_rmse/test_r2/forget 等
+    metric_suffixes = ["test_me", "test_sd", "test_mae", "test_rmse", "test_r2", "forget"]
+
+    # 1) 优先使用 pooled 的 key 作为 mode 列表；否则从 df 列名中解析
+    if pooled is not None and isinstance(pooled, dict) and len(pooled) > 0:
+        modes_infer = list(pooled.keys())
+    else:
+        modes_infer = []
+        if len(df.columns) > 0:
+            for c in df.columns:
+                for suf in metric_suffixes:
+                    tag = "_" + suf
+                    if c.endswith(tag):
+                        modes_infer.append(c[: -len(tag)])
+                        break
+        # 去重保持顺序
+        seen = set()
+        modes_infer = [x for x in modes_infer if not (x in seen or seen.add(x))]
+    
+    # === [新增] 生成 gain_<mode>（以 base_mode 为参照）===
+    base_mode = "global_eval" if "global_eval" in modes_infer else (modes_infer[0] if len(modes_infer) > 0 else None)
+    # 只要 base 和目标 mode 都有 test_mae 列，就生成 gain_<mode> = base_mae - mode_mae
+    if base_mode is not None:
+        base_mae_col = f"{base_mode}_test_mae"
+        if base_mae_col in df.columns:
+            for m in modes_infer:
+                m_mae_col = f"{m}_test_mae"
+                if m_mae_col in df.columns:
+                    df[f"gain_{m}"] = pd.to_numeric(df[base_mae_col], errors="coerce") - pd.to_numeric(df[m_mae_col], errors="coerce")
+                else:
+                    df[f"gain_{m}"] = np.nan
+
+    # 2) 构建统计列映射：既统计通用列，也统计每个 mode 的指标列
     cols_to_stat = {
-        "gain_mae": "gain", "forget_ewc": "seq_ewc_forget", "forget_ft": "seq_ft_forget",
-        "g_me": "global_eval_test_me", "g_sd": "global_eval_test_sd", "g_mae": "global_eval_test_mae", "g_rmse": "global_eval_test_rmse", "g_r2": "global_eval_test_r2",
-        "ft_me": "seq_ft_test_me", "ft_sd": "seq_ft_test_sd", "ft_mae": "seq_ft_test_mae", "ft_rmse": "seq_ft_test_rmse", "ft_r2": "seq_ft_test_r2",
-        "ewc_me": "seq_ewc_test_me", "ewc_sd": "seq_ewc_test_sd", "ewc_mae": "seq_ewc_test_mae", "ewc_rmse": "seq_ewc_test_rmse", "ewc_r2": "seq_ewc_test_r2",
         "trainable_params": "trainable_params",
     }
-    
+    for m in modes_infer:
+        gcol = f"gain_{m}"
+        if gcol in df.columns:
+            cols_to_stat[gcol] = gcol
+    for mode in modes_infer:
+        for suf in metric_suffixes:
+            col = f"{mode}_{suf}"
+            if col in df.columns:
+                cols_to_stat[f"{mode}_{suf}"] = col
+
     stats = {"columns": {}, "overall": {}}
     for k, c in cols_to_stat.items():
         if c in df.columns:
             stats["columns"][k] = series_stats(df[c])
 
-    # 完整胜率与分布统计
-    if "gain" in df.columns:
-        improved = df["gain"] > 0
-        stats["overall"].update({
-            "n_users": int(len(df)), "improve_rate_mae": float(improved.mean()),
-            "n_improved": int(improved.sum()), "n_degraded": int((~improved).sum())
-        })
+    # === [替换] 按 gain_<mode> 分别统计 improve_rate 与分布 ===
+    stats["overall"].update({"n_users": int(len(df))})
+    for m in modes_infer:
+        gcol = f"gain_{m}"
+        if gcol not in df.columns:
+            continue
+        g = pd.to_numeric(df[gcol], errors="coerce")
+        improved = g > 0
+        # 每个 mode 的提升比例（相对 base_mode 的 MAE 改善）
+        stats["overall"][f"improve_rate_{m}"] = float(improved.mean()) if improved.notna().any() else float("nan")
+        stats["overall"][f"n_improved_{m}"] = int(improved.sum(skipna=True))
+        stats["overall"][f"n_degraded_{m}"] = int((~improved & g.notna()).sum())
 
-        if improved.any():
-            stats["overall"]["gain_mean_improved"] = float(df.loc[improved, "gain"].mean())
-            stats["overall"]["gain_median_improved"] = float(df.loc[improved, "gain"].median())
-        if (~improved).any():
-            stats["overall"]["gain_mean_degraded"] = float(df.loc[~improved, "gain"].mean())
-            stats["overall"]["gain_median_degraded"] = float(df.loc[~improved, "gain"].median())
-
-    # 提取表现最好/最差的用户
-    if "gain" in df.columns and "user_id" in df.columns and len(df) > 0:
-        best_idx, worst_idx = df["gain"].idxmax(), df["gain"].idxmin()
-        for label, idx in zip(["best_user", "worst_user"], [best_idx, worst_idx]):
-            stats["overall"][label] = {
-                "user_id": df.loc[idx, "user_id"],
-                "gain": float(df.loc[idx, "gain"]),
-                "g_mae": float(df.loc[idx, "global_eval_test_mae"]),
-                "ewc_mae": float(df.loc[idx, "seq_ewc_test_mae"]),
+    # === 对每个 gain_<mode> 提取 best/worst user ===
+    if "user_id" in df.columns and len(df) > 0:
+        stats["overall"]["best_worst_by_gain"] = {}
+        for m in modes_infer:
+            gcol = f"gain_{m}"
+            if gcol not in df.columns:
+                continue
+            g = pd.to_numeric(df[gcol], errors="coerce")
+            if g.dropna().empty:
+                continue
+            best_idx = g.idxmax()
+            worst_idx = g.idxmin()
+            stats["overall"]["best_worst_by_gain"][m] = {
+                "best_user": {"user_id": df.loc[best_idx, "user_id"], "gain": float(g.loc[best_idx])},
+                "worst_user": {"user_id": df.loc[worst_idx, "user_id"], "gain": float(g.loc[worst_idx])},
             }
 
     # 保存 [新增] pooled（样本级总体 / micro）统计：把所有用户 test 样本拼起来算
@@ -220,23 +262,61 @@ def save_and_summarize_results(all_results, output_dir, target, TimeID, pooled=N
     with open(os.path.join(output_dir, f"summary-{target}-{TimeID}.json"), "w") as f:
         json.dump(stats, f, indent=4)
 
-    # 打印 用户级 macro 统计
-    print(f"\nUsers: {stats['overall'].get('n_users', len(df))} | Improve rate(MAE): {stats['overall'].get('improve_rate_mae', float('nan')):.3f}")
-    print(f"Gain(MAE) mean±std: {stats['columns'].get('gain_mae', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('gain_mae', {}).get('std', float('nan')):.3f}")
-    print(f"Gain(MAE) median[IQR]: {stats['columns'].get('gain_mae', {}).get('median', float('nan')):.3f} [{stats['columns'].get('gain_mae', {}).get('iqr', float('nan')):.3f}]")
-    print(f"Forget_ft mean±std: {stats['columns'].get('forget_ft', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('forget_ft', {}).get('std', float('nan')):.3f}")
-    print(f"Forget_ewc mean±std: {stats['columns'].get('forget_ewc', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('forget_ewc', {}).get('std', float('nan')):.3f}")
-    print(f"G_ME mean±std: {stats['columns'].get('g_me', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('g_me', {}).get('std', float('nan')):.3f} ")
-    print(f"G_SD mean±std: {stats['columns'].get('g_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('g_sd', {}).get('std', float('nan')):.3f}")
-    print(f"ft_ME mean±std: {stats['columns'].get('ft_me', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ft_me', {}).get('std', float('nan')):.3f} ")
-    print(f"ft_SD mean±std: {stats['columns'].get('ft_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ft_sd', {}).get('std', float('nan')):.3f}")
-    print(f"ewc_ME mean±std: {stats['columns'].get('ewc_me', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ewc_me', {}).get('std', float('nan')):.3f} ")
-    print(f"ewc_SD mean±std: {stats['columns'].get('ewc_sd', {}).get('mean', float('nan')):.3f} ± {stats['columns'].get('ewc_sd', {}).get('std', float('nan')):.3f}")
-    # 打印 pooled（样本级总体 / micro）统计
+    # 打印 用户级（macro）统计：自适应 mode； 打印 gain_<mode> 统计与 improve_rate
+    for m in modes_infer:
+        key = f"gain_{m}"
+        if key not in stats["columns"]:
+            continue
+        s = stats["columns"][key]
+        ir = stats["overall"].get(f"improve_rate_{m}", float("nan"))
+        print(
+            f"{key} (base={base_mode}): "
+            f"mean±std {s.get('mean', float('nan')):.3f} ± {s.get('std', float('nan')):.3f} | "
+            f"median[IQR] {s.get('median', float('nan')):.3f} [{s.get('iqr', float('nan')):.3f}] | "
+            f"improve_rate {ir:.3f}"
+        )
+    # forget（若存在）
+    for k in list(stats["columns"].keys()):
+        if k.endswith("_forget"):
+            s = stats["columns"][k]
+            print(f"{k} mean±std: {s.get('mean', float('nan')):.3f} ± {s.get('std', float('nan')):.3f}")
+
+    def _colstat(key):
+        return stats["columns"].get(key, {})
+
+    # 从 cols_to_stat 中解析 mode 列表（保持稳定）
+    mode_list = []
+    for key in cols_to_stat.keys():
+        for suf in ["test_mae", "test_me", "test_sd", "test_rmse", "test_r2"]:
+            tag = "_" + suf
+            if key.endswith(tag):
+                mode = key[: -len(tag)]
+                if mode not in mode_list:
+                    mode_list.append(mode)
+                break
+
+    for mode in mode_list:
+        mae = _colstat(f"{mode}_test_mae")
+        me  = _colstat(f"{mode}_test_me")
+        sd  = _colstat(f"{mode}_test_sd")
+        rmse= _colstat(f"{mode}_test_rmse")
+        r2  = _colstat(f"{mode}_test_r2")
+        if any(len(x) > 0 for x in [mae, me, sd, rmse, r2]):
+            print(
+                f"{mode}: "
+                f"MAE {mae.get('mean', float('nan')):.3f}±{mae.get('std', float('nan')):.3f} | "
+                f"ME {me.get('mean', float('nan')):.3f}±{me.get('std', float('nan')):.3f} | "
+                f"SD {sd.get('mean', float('nan')):.3f}±{sd.get('std', float('nan')):.3f} | "
+                f"RMSE {rmse.get('mean', float('nan')):.3f}±{rmse.get('std', float('nan')):.3f} | "
+                f"R2 {r2.get('mean', float('nan')):.3f}±{r2.get('std', float('nan')):.3f}"
+            )
+
+    # pooled（样本级总体 / micro）统计：自适应 mode
     pooled_block = stats["overall"].get("pooled_test", {})
     if pooled_block:
         print("\nPooled test (all samples across all users) [micro]:")
-        for mode in ["global_eval", "seq_ft", "seq_ewc"]:
+        order = mode_list if len(mode_list) > 0 else list(pooled_block.keys())
+        for mode in order:
             pm = pooled_block.get(mode, None)
             if pm is None:
                 continue
@@ -261,14 +341,20 @@ if __name__ == '__main__':
     selected_users = random.sample(valid_users, min(1000, len(valid_users)))
     
     all_results = []
-    modes = ['global_eval', 'seq_ft', 'seq_ewc']
+    modes = ['global_eval', 'seq_ft', 'seq_ewc', 'seq_replay', 'seq_hybrid']
     pooled = {m: {"y_true": [], "y_pred": []} for m in modes} # 用于后续整体统计的 pooled 结果容器
     layers_to_unfreeze = UNFREEZE_PRESETS[UNFREEZE_PRESET]
     
     base_model = torch.load(pretrained_model_path, map_location="cpu")
     base_state = {k: v.clone() for k, v in base_model.state_dict().items()}
     print("解冻层:", UNFREEZE_PRESET, "->", layers_to_unfreeze)
-    print("idx | user_id | P(M) | G(MAE/RMSE/R2) | FT(MAE/RMSE/R2) | EWC(MAE/RMSE/R2) | gain_mae | dR2 | seq_ft_forget | seq_ewc_forget | t(s)")
+
+    # 动态表头：自适应 modes
+    header_parts = ["idx", "user_id", "P(M)"]
+    header_parts += [f"{m}(MAE/ME/SD)" for m in modes]
+    header_parts += [f"{m}_forget" for m in modes]
+    header_parts += ["t(s)"]
+    print(" | ".join(header_parts))
 
     # 批量跑实验
     for u_idx, user_id in enumerate(selected_users):
@@ -301,6 +387,9 @@ if __name__ == '__main__':
                 user_id, batch_loaders, test_loader, val_loader=val_loader,
                 val_check='batch', rollback_to_best=True, patience=0, 
                 mode=mode, lambda_ewc=500, trainable_keywords=layers_to_unfreeze,
+                buffer_size=64,           # [新增] Memory Buffer 最大容量
+                replay_batch_size=8,       # [新增] 每次训练从 Buffer 中抽取的 batch 大小
+                alpha_replay=1.0,          # [新增] Replay 损失的权重
                 verbose=0, show_progress=False
             )
             for k, v in res.items():
@@ -309,23 +398,38 @@ if __name__ == '__main__':
             y_true_m, y_pred_m = _infer_on_loader(model, test_loader, device)
             pooled[mode]["y_true"].append(y_true_m)
             pooled[mode]["y_pred"].append(y_pred_m)
-        # 计算结果差异
-        user_res['gain'] = user_res.get('global_eval_test_mae', 0) - user_res.get('seq_ewc_test_mae', 0)
-        g_me, g_sd, g_mae, g_rmse, g_r2 = user_res.get('global_eval_test_me', float('nan')), user_res.get('global_eval_test_sd', float('nan')), user_res.get('global_eval_test_mae', float('nan')), user_res.get('global_eval_test_rmse', float('nan')), user_res.get('global_eval_test_r2', float('nan'))
-        ft_me, ft_sd, ft_mae, ft_rmse, ft_r2 = user_res.get('seq_ft_test_me', float('nan')), user_res.get('seq_ft_test_sd', float('nan')), user_res.get('seq_ft_test_mae', float('nan')), user_res.get('seq_ft_test_rmse', float('nan')), user_res.get('seq_ft_test_r2', float('nan'))
-        ewc_me, ewc_sd, ewc_mae, ewc_rmse, ewc_r2 = user_res.get('seq_ewc_test_me', float('nan')), user_res.get('seq_ewc_test_sd', float('nan')), user_res.get('seq_ewc_test_mae', float('nan')), user_res.get('seq_ewc_test_rmse', float('nan')), user_res.get('seq_ewc_test_r2', float('nan'))
-        
-        gain_mae = g_mae - ewc_mae
-        delta_r2 = ewc_r2 - g_r2
-        seq_ft_forget = user_res.get('seq_ft_forget', float('nan'))
-        seq_ewc_forget = user_res.get('seq_ewc_forget', float('nan'))
 
+        # 计算结果差异
+        def _get(mode, suf, default=float('nan')):
+            if mode is None:
+                return default
+            return user_res.get(f"{mode}_{suf}", default)
+
+        forget_map = {m: _get(m, "forget") for m in modes}
         t_user = time.time() - t_user0
-        print(f"{u_idx+1:>3d} | {user_id} | {user_res.get('trainable_params', float('nan'))/1e6:>4.2f} | "
-              f"{g_mae:>5.2f}/{g_me:>5.2f}/{g_sd:>6.3f} | "
-              f"{ft_mae:>5.2f}/{ft_me:>5.2f}/{ft_sd:>6.3f} | "
-              f"{ewc_mae:>5.2f}/{ewc_me:>5.2f}/{ewc_sd:>6.3f} | "
-              f"{gain_mae:>8.2f} | {delta_r2:>6.3f} | {seq_ft_forget:>5.2f} | {seq_ewc_forget:>6.2f} | {t_user:>5.1f}")
+
+        # 动态行输出：每个 mode 打印 MAE/ME/SD（若缺失则 nan）
+        row_parts = [
+            f"{u_idx+1:>3d}",
+            f"{user_id}",
+            f"{user_res.get('trainable_params', float('nan'))/1e6:>4.2f}",
+        ]
+
+        for m in modes:
+            mae = user_res.get(f"{m}_test_mae", float('nan'))
+            me  = user_res.get(f"{m}_test_me", float('nan'))
+            sd  = user_res.get(f"{m}_test_sd", float('nan'))
+            row_parts.append(f"{mae:>5.2f}/{me:>5.2f}/{sd:>6.3f}")
+
+        for m in modes:
+            fgt = forget_map.get(m, float('nan'))
+            if isinstance(fgt, (int, float, np.floating)) and np.isfinite(fgt):
+                row_parts.append(f"{float(fgt):>6.2f}")
+            else:
+                row_parts.append(f"{float('nan'):>6.2f}")
+
+        row_parts.append(f"{t_user:>5.1f}")
+        print(" | ".join(row_parts))
         all_results.append(user_res)
         
     # 保存与统计汇总
