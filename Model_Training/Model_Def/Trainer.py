@@ -330,25 +330,53 @@ class Model_Trainer:
 
         global_step = 1
         cl_batch_loss_mean, b1_mae_hist, all_train_losses = [], [], []
+        # 全局最佳验证状态（保留用于统计，可选）
         best_val_mae, best_state, best_tag, no_improve = float('inf'), None, None, 0
         stopped_early = False
 
-        def _eval_val_and_maybe_update(tag: str):
-            """内部验证与早停逻辑"""
+        # ----- per‑batch variables (reset for each CL batch) -----
+        batch_best_mae = float('inf')
+        batch_best_state = None
+        batch_best_tag = None
+        batch_no_improve = 0
+
+        def _eval_val_and_maybe_update(tag: str, batch_scope: bool = False):
+            """验证+早停逻辑。
+
+            * 如果 batch_scope=True，还会更新当前 CL batch 的局部最佳。
+            * 返回值 only reflects global patience condition (保持原行为)。
+            """
             nonlocal best_val_mae, best_state, best_tag, no_improve
-            if val_loader is None: return False
+            nonlocal batch_best_mae, batch_best_state, batch_best_tag, batch_no_improve
+            if val_loader is None:
+                return False
             v_loss, v_r2, v_me, v_sd, v_rmse, v_mae = self.Evaluate_Loader(val_loader)
             result_dict[f'val_mae_{tag}'] = float(v_mae)
 
+            # update global best
             if (v_mae + min_delta) < best_val_mae:
                 best_val_mae, best_tag, no_improve = float(v_mae), tag, 0
                 best_state = {k: v.detach().cpu().clone() for k, v in self.Model_Running.state_dict().items()}
             else:
                 no_improve += 1
-            return (patience > 0 and no_improve >= patience)
+
+            # update batch‑specific best if requested
+            if batch_scope:
+                if (v_mae + min_delta) < batch_best_mae:
+                    batch_best_mae, batch_best_tag, batch_no_improve = float(v_mae), tag, 0
+                    batch_best_state = {k: v.detach().cpu().clone() for k, v in self.Model_Running.state_dict().items()}
+                else:
+                    batch_no_improve += 1
+
+            return (patience > 0 and batch_no_improve >= patience)
         
         # --- 遍历 CL Batches ---
         for k, loader in enumerate(batch_loaders):
+            # reset per-batch best tracking before training this new task/batch
+            batch_best_mae = float('inf')
+            batch_best_state = None
+            batch_best_tag = None
+            batch_no_improve = 0
             batch_losses = []
             
             for Epoch in range(1, self.Num_Epoch + 1):
@@ -422,11 +450,10 @@ class Model_Trainer:
                     except Exception:
                         pass
 
-                # Epoch级别的早停检查
-                if val_loader and val_check == 'epoch' and _eval_val_and_maybe_update(f'after_b{k+1}_e{Epoch}'):
+                # Epoch级别的早停检查（同时更新 batch 内最佳）
+                if val_loader and val_check == 'epoch' and _eval_val_and_maybe_update(f'after_b{k+1}_e{Epoch}', batch_scope=True):
                     stopped_early = True; break
 
-            if stopped_early: break
             # 每个 CL batch 结束：评估 batch1 MAE 作为遗忘监控
             all_train_losses.extend(batch_losses)
             cl_batch_loss_mean.append(float(np.mean(batch_losses)) if batch_losses else 0.0)
@@ -468,17 +495,33 @@ class Model_Trainer:
                 replay_buffer.add_data(loader, samples_to_add)
 
             # 每个 CL batch 结束后，如果设置了 val_check='batch'，则评估一次验证集并判断是否早停
-            if val_loader and val_check == 'batch' and _eval_val_and_maybe_update(f'after_batch{k+1}'):
+            if val_loader and val_check == 'batch' and _eval_val_and_maybe_update(f'after_batch{k+1}', batch_scope=True):
                 stopped_early = True; break
+
+            # batch结束时对模型进行本批最佳回滚
+            if rollback_to_best and batch_best_state is not None:
+                # load the best parameters seen during this batch
+                self.Model_Running.load_state_dict(batch_best_state, strict=True)
+                result_dict[f'batch{ k+1 }_best_mae'] = float(batch_best_mae)
+                result_dict[f'batch{ k+1 }_best_at'] = batch_best_tag
+
             if verbose >= 2:
                 avg_loss = float(np.mean(batch_losses)) if len(batch_losses) else 0.0
                 print(f"  - CL batch {k+1}/{len(batch_loaders)} | avg_loss {avg_loss:.3f} | b1_mae {b1_mae:.3f}")
 
-        # ==================== Priority-1: rollback to best val checkpoint ====================
-        if rollback_to_best and (best_state is not None):
-            self.Model_Running.load_state_dict(best_state, strict=True)
-            result_dict['val_best_mae'] = float(best_val_mae)
-            result_dict['val_best_at'] = best_tag
+            if stopped_early: break
+
+        # ==================== 最终回滚/统计 ====================
+        # 训练过程中每个 CL batch 已在 batch 末尾回滚到该 batch 内最佳。
+        # 这里不再重新加载全局 best_state，以免覆盖最后一个 batch 的状态。
+        if rollback_to_best:
+            # 仍然保留全局验证最优统计信息供结果输出
+            if best_state is not None:
+                result_dict['val_best_mae'] = float(best_val_mae)
+                result_dict['val_best_at'] = best_tag
+            else:
+                result_dict['val_best_mae'] = float('nan')
+                result_dict['val_best_at'] = None
         else:
             result_dict['val_best_mae'] = float('nan')
             result_dict['val_best_at'] = None

@@ -342,6 +342,7 @@ if __name__ == '__main__':
     
     all_results = []
     modes = ['global_eval', 'seq_ft', 'seq_ewc', 'seq_replay', 'seq_hybrid']
+    # modes = ['global_eval', 'seq_hybrid']
     pooled = {m: {"y_true": [], "y_pred": []} for m in modes} # 用于后续整体统计的 pooled 结果容器
     layers_to_unfreeze = UNFREEZE_PRESETS[UNFREEZE_PRESET]
     
@@ -378,7 +379,7 @@ if __name__ == '__main__':
 
             Settings = {
                 'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-6, betas=(0.9, 0.999), weight_decay=0)",
-                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=60, save_states=False, save_final=False, timeid=TimeID)"
+                'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=50, save_states=False, save_final=False, timeid=TimeID)"
             }
             BP_optimizer = eval(Settings['BP_optimizer'])
             model_trainer = eval(Settings['trainer'])
@@ -387,9 +388,7 @@ if __name__ == '__main__':
                 user_id, batch_loaders, test_loader, val_loader=val_loader,
                 val_check='epoch', rollback_to_best=True, patience=0, 
                 mode=mode, lambda_ewc=500, trainable_keywords=layers_to_unfreeze,
-                buffer_size=64,           # [新增] Memory Buffer 最大容量
-                replay_batch_size=8,       # [新增] 每次训练从 Buffer 中抽取的 batch 大小
-                alpha_replay=1.0,          # [新增] Replay 损失的权重
+                buffer_size=64, replay_batch_size=8, alpha_replay=1.0, # replay 相关参数
                 verbose=0, show_progress=False
             )
             for k, v in res.items():
