@@ -338,11 +338,11 @@ if __name__ == '__main__':
     # 初始化数据
     signals, labels, user2idx_sorted = load_and_sort_user_data(mat_path, target)
     valid_users = [u for u in user2idx_sorted.keys() if len(user2idx_sorted[u]) >= 300]
-    selected_users = random.sample(valid_users, min(1000, len(valid_users)))
+    selected_users = random.sample(valid_users, min(5, len(valid_users)))
     
     all_results = []
-    modes = ['global_eval', 'seq_ft', 'seq_ewc', 'seq_replay', 'seq_hybrid']
-    # modes = ['global_eval', 'seq_hybrid']
+    # modes = ['global_eval', 'seq_ft', 'seq_ewc', 'seq_replay', 'seq_hybrid']
+    modes = ['global_eval', 'seq_hybrid']
     pooled = {m: {"y_true": [], "y_pred": []} for m in modes} # 用于后续整体统计的 pooled 结果容器
     layers_to_unfreeze = UNFREEZE_PRESETS[UNFREEZE_PRESET]
     
@@ -378,7 +378,7 @@ if __name__ == '__main__':
                 user_res['trainable_params'] = count_trainable_params(model)
 
             Settings = {
-                'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-6, betas=(0.9, 0.999), weight_decay=0)",
+                'BP_optimizer': "torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5, betas=(0.9, 0.999), weight_decay=0)",
                 'trainer': "Model_Trainer(model, torch.nn.MSELoss(), BP_optimizer, device, Settings, batch_size=8, num_epochs=50, save_states=False, save_final=False, timeid=TimeID)"
             }
             BP_optimizer = eval(Settings['BP_optimizer'])
@@ -388,7 +388,7 @@ if __name__ == '__main__':
                 user_id, batch_loaders, test_loader, val_loader=val_loader,
                 val_check='epoch', rollback_to_best=True, patience=0, 
                 mode=mode, lambda_ewc=500, trainable_keywords=layers_to_unfreeze,
-                buffer_size=64, replay_batch_size=8, alpha_replay=1.0, # replay 相关参数
+                buffer_size=32, replay_batch_size=4, alpha_replay=0.5, # replay 相关参数
                 verbose=0, show_progress=False
             )
             for k, v in res.items():

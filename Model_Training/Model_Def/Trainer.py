@@ -619,7 +619,7 @@ class EWCRegularizer:
         dataloader,
         loss_fn,
         max_batches=200,      # ✅ 建议从 50 提高到 200（或按任务大小比例）
-        gamma=0.95,           # ✅ Online EWC: F <- gamma*F + F_new
+        gamma=0.5,           # ✅ Online EWC: F <- gamma*F + F_new
         damping=1e-8,         # ✅ 防止 fisher 为 0 导致正则无效
         use_eval_mode=True,   # ✅ eval 模式估 fisher，减少 BN/Dropout 噪声
     ):
