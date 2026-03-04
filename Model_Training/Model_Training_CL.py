@@ -15,6 +15,20 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, message=r".*torch\.load.*weights_only=False.*")
 
 # 1. 基础辅助函数
+def print_current_gpu_info():
+    """打印当前使用的 GPU 信息（逻辑编号、型号、物理索引）"""
+    if torch.cuda.is_available():
+        current_device = torch.cuda.current_device()
+        device_name = torch.cuda.get_device_name(current_device)
+        print(f"当前使用 GPU: 逻辑编号 {current_device}，型号: {device_name}")
+        
+        if 'CUDA_VISIBLE_DEVICES' in os.environ:
+            visible_devices = os.environ['CUDA_VISIBLE_DEVICES'].split(',')
+            physical_index = visible_devices[current_device]
+            print(f"对应物理 GPU 索引: {physical_index}")
+    else:
+        print("CUDA 不可用，使用 CPU")
+
 def count_trainable_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -332,10 +346,11 @@ if __name__ == '__main__':
         mat_path = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalFree_Test_Subset.mat'
     elif os.name == 'posix':  # Linux
         mat_path = '/home/zxy233580/projects/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalFree_Test_Subset.mat'
+        # mat_path = '/home/zxy233580/projects/Data/PulseDB/MIMIC_Subset_Files/MIMIC_CalFree_Test_Subset.mat'
     pretrained_model_path = 'PTH/121517/trained_model.pth'
     
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    print_current_gpu_info()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     TimeID = datetime.now().strftime('%H%M%S')
     
     # 初始化数据
@@ -349,7 +364,7 @@ if __name__ == '__main__':
     pooled = {m: {"y_true": [], "y_pred": []} for m in modes} # 用于后续整体统计的 pooled 结果容器
     layers_to_unfreeze = UNFREEZE_PRESETS[UNFREEZE_PRESET]
     
-    base_model = torch.load(pretrained_model_path, map_location="cpu")
+    base_model = torch.load(pretrained_model_path, map_location="cpu", weights_only=False)
     base_state = {k: v.clone() for k, v in base_model.state_dict().items()}
     print("解冻层:", UNFREEZE_PRESET, "->", layers_to_unfreeze)
 
