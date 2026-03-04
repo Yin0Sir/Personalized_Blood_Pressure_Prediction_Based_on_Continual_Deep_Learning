@@ -202,6 +202,7 @@ UNFREEZE_PRESETS = {
     "head_3_4": ["final_fc", "resnet.layer3", "resnet.layer4"],
     "head_c": ["final_fc", "cornet"],
     "head_c_4": ["final_fc", "cornet", "resnet.layer4"],
+    "adapter": []
 }
 UNFREEZE_PRESET = "adapter"  # 当前启用哪个组合
 
@@ -485,8 +486,8 @@ if __name__ == '__main__':
             
             if UNFREEZE_PRESET == "adapter" or "adapter" in layers_to_unfreeze:
                 inject_ultimate_adapters_and_unfreeze_bn(model)
-
-            set_trainable_by_prefix(model, layers_to_unfreeze)
+            else:
+                set_trainable_by_prefix(model, layers_to_unfreeze)
 
             if mode == modes[0]:
                 user_res['trainable_params'] = count_trainable_params(model)
