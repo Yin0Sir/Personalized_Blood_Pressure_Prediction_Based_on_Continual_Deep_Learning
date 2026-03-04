@@ -491,7 +491,7 @@ if __name__ == '__main__':
     print(" | ".join(header_parts))
 
     # 批量跑实验
-    USE_VAL = False  # ✅ 修改此处：True=8:1:1分割（有验证集），False=9:1分割（无验证集）
+    USE_VAL = False
     for u_idx, user_id in enumerate(selected_users):
         t_user0 = time.time()
         idx_sorted = user2idx_sorted[user_id]
@@ -500,7 +500,7 @@ if __name__ == '__main__':
             train_idx, val_idx, test_idx = split_user_stream(idx_sorted, train_ratio=0.8, use_val=True)
             val_loader = data.DataLoader(CLDataset(signals[val_idx], labels[val_idx]), batch_size=8, shuffle=False)
         else:
-            train_idx, test_idx = split_user_stream(idx_sorted, train_ratio=0.9, use_val=False)
+            train_idx, test_idx = split_user_stream(idx_sorted, train_ratio=0.8, use_val=False)
             val_loader = None  # 无验证集
         
         batch_loaders = [data.DataLoader(CLDataset(signals[b], labels[b]), batch_size=8, shuffle=False) for b in split_train_to_batches(train_idx, K=4)]
