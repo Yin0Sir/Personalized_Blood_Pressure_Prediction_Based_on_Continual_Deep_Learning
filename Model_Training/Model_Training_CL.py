@@ -185,10 +185,32 @@ def load_and_sort_user_data(mat_path, target_label='SBP'):
         
     return signals, labels, user2idx_sorted
 
-def split_user_stream(idx_sorted, train_ratio=0.8, val_ratio=0.1):
+def split_user_stream(idx_sorted, train_ratio=0.9, val_ratio=None, use_val=False):
+    """
+    划分用户数据流为训练/验证/测试集
+    
+    Args:
+        idx_sorted: 时间排序后的样本索引
+        train_ratio: 训练集比例（默认0.9）
+        val_ratio: 验证集比例（仅当use_val=True时有效，默认None）
+        use_val: 是否使用验证集（False时返回train/test; True时返回train/val/test）
+    
+    Returns:
+        若use_val=False: (train_idx, test_idx)  # 9:1 分割
+        若use_val=True:  (train_idx, val_idx, test_idx)  # 8:1:1 分割
+    """
     T = len(idx_sorted)
-    t_end, v_end = math.floor(train_ratio * T), math.floor((train_ratio + val_ratio) * T)
-    return idx_sorted[:t_end], idx_sorted[t_end:v_end], idx_sorted[v_end:]
+    
+    if use_val:
+        if val_ratio is None:
+            val_ratio = 0.1  # 默认8:1:1分割
+        t_end = math.floor(train_ratio * T)
+        v_end = math.floor((train_ratio + val_ratio) * T)
+        return idx_sorted[:t_end], idx_sorted[t_end:v_end], idx_sorted[v_end:]
+    else:
+        # 9:1 分割：无验证集
+        t_end = math.floor(train_ratio * T)
+        return idx_sorted[:t_end], idx_sorted[t_end:]
 
 def split_train_to_batches(train_idx, K=4):
     T_train = len(train_idx)
@@ -204,7 +226,7 @@ UNFREEZE_PRESETS = {
     "head_c_4": ["final_fc", "cornet", "resnet.layer4"],
     "adapter": []
 }
-UNFREEZE_PRESET = "adapter"  # 当前启用哪个组合
+UNFREEZE_PRESET = "head_c"  # 当前启用哪个组合
 
 def set_trainable_by_prefix(model, prefixes):
     for p in model.parameters():
@@ -469,13 +491,19 @@ if __name__ == '__main__':
     print(" | ".join(header_parts))
 
     # 批量跑实验
+    USE_VAL = False  # ✅ 修改此处：True=8:1:1分割（有验证集），False=9:1分割（无验证集）
     for u_idx, user_id in enumerate(selected_users):
         t_user0 = time.time()
         idx_sorted = user2idx_sorted[user_id]
-        train_idx, val_idx, test_idx = split_user_stream(idx_sorted)
+        
+        if USE_VAL:
+            train_idx, val_idx, test_idx = split_user_stream(idx_sorted, train_ratio=0.8, use_val=True)
+            val_loader = data.DataLoader(CLDataset(signals[val_idx], labels[val_idx]), batch_size=8, shuffle=False)
+        else:
+            train_idx, test_idx = split_user_stream(idx_sorted, train_ratio=0.9, use_val=False)
+            val_loader = None  # 无验证集
         
         batch_loaders = [data.DataLoader(CLDataset(signals[b], labels[b]), batch_size=8, shuffle=False) for b in split_train_to_batches(train_idx, K=4)]
-        val_loader  = data.DataLoader(CLDataset(signals[val_idx],  labels[val_idx]),  batch_size=8, shuffle=False)
         test_loader = data.DataLoader(CLDataset(signals[test_idx], labels[test_idx]), batch_size=8, shuffle=False)
         
         user_res = {'user_id': user_id}
