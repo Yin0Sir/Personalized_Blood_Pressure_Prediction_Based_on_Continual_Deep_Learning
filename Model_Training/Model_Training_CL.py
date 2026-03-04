@@ -52,63 +52,97 @@ class CLDataset(data.Dataset):
     def __getitem__(self, idx):
         return self.Input[idx, :], self.Label[[idx]]
 
+import torch
 import torch.nn as nn
 import types
 
-# --- 新增：1D Adapter 模块 ---
-class Adapter1d(nn.Module):
-    def __init__(self, channels, reduction=4):
-        super(Adapter1d, self).__init__()
-        # 瓶颈结构：降维再升维，减少参数量
-        mid_channels = max(channels // reduction, 1)
-        self.down_conv = nn.Conv1d(channels, mid_channels, kernel_size=1, bias=False)
-        self.relu = nn.ReLU(inplace=True)
-        self.up_conv = nn.Conv1d(mid_channels, channels, kernel_size=1, bias=False)
+class HighPerformanceAdapter1d(nn.Module):
+    def __init__(self, channels, reduction=2): # 降低reduction以提升容量
+        super().__init__()
+        mid_channels = max(channels // reduction, channels // 2)
         
-        # 关键：将升维层的权重初始化为0
-        # 这样在训练初期，Adapter的输出为0，完全等价于预训练基模的原始特征
-        nn.init.zeros_(self.up_conv.weight)
+        # 1. 特征变换路径
+        self.transform = nn.Sequential(
+            nn.Conv1d(channels, mid_channels, kernel_size=1, bias=False),
+            nn.BatchNorm1d(mid_channels), # 引入BN稳定深层训练
+            nn.GELU(),
+            nn.Conv1d(mid_channels, channels, kernel_size=1, bias=False)
+        )
+        
+        # 2. 通道注意力路径 (捕捉个体生理信号的敏感通道)
+        self.attention = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Conv1d(channels, channels // 4, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(channels // 4, channels, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        # 3. 门控标量 (初始化为0，保证初始输出与基模完全一致)
+        self.gate = nn.Parameter(torch.zeros(1))
+        
+        # 将最后一层卷积权重初始化为0
+        nn.init.zeros_(self.transform[-1].weight)
 
     def forward(self, x):
-        return x + self.up_conv(self.relu(self.down_conv(x)))
+        # 提取个性化特征
+        adapted_feat = self.transform(x)
+        # 赋予通道注意力
+        attn = self.attention(x)
+        adapted_feat = adapted_feat * attn
+        
+        # 门控机制：自适应决定个性化特征的注入比例
+        return x + self.gate * adapted_feat
 
-# --- 新增：动态注入 Adapter 的函数 ---
-def inject_adapters(model, reduction=4):
-    #  遍历模型，找到所有的 BasicBlock，在残差相加之前动态插入 Adapter。
-    from Model_Def.DDCCor import BasicBlock # 确保引入了你的基础块
+def inject_ultimate_adapters_and_unfreeze_bn(model):
+    from Model_Def.DDCCor import BasicBlock
     
-    for name, module in model.named_modules():
-        if isinstance(module, BasicBlock):
-            # 获取当前 Block 的输出通道数
-            out_channels = module.bn2.num_features
-            # 实例化 Adapter 并挂载到 module 上
-            module.adapter = Adapter1d(out_channels, reduction=reduction).to(next(model.parameters()).device)
-            
-            # 替换原有的 forward 方法
-            old_forward = module.forward
-            def new_forward(self, x):
-                identity = x
+    # 1. 动态插入 Adapter 到 Layer3 和 Layer4
+    # 注意：我们这里只对深层做插入，提升精度同时控制参数量
+    target_layers = [model.resnet.layer3, model.resnet.layer4]
+    
+    for layer in target_layers:
+        for name, module in layer.named_children():
+            if isinstance(module, BasicBlock):
+                out_channels = module.bn2.num_features
+                module.adapter = HighPerformanceAdapter1d(out_channels, reduction=2).to(next(model.parameters()).device)
+                
+                old_forward = module.forward
+                def new_forward(self, x):
+                    identity = x
+                    out = self.conv1(x)
+                    out = self.bn1(out)
+                    out = self.relu(out)
+                    out = self.conv2(out)
+                    out = self.bn2(out)
+                    
+                    if self.downsample is not None:
+                        identity = self.downsample(x)
+                        
+                    out = self.adapter(out) # 注入高性能 Adapter
+                    out += identity
+                    out = self.relu(out)
+                    return out
+                
+                module.forward = types.MethodType(new_forward, module)
 
-                out = self.conv1(x)
-                out = self.bn1(out)
-                out = self.relu(out)
+    # 2. 参数冻结与精确解冻策略
+    # 首先冻结全局所有参数
+    for p in model.parameters():
+        p.requires_grad = False
+        
+    # 然后解冻我们需要的极致个性化部分
+    for name, p in model.named_parameters():
+        # (a) 解冻所有插入的 Adapter
+        if "adapter" in name:
+            p.requires_grad = True
+        # (b) 解冻所有的 BatchNorm 层（这是生理信号提点的关键！）
+        elif "bn" in name or "norm" in name or isinstance(model.get_submodule(".".join(name.split(".")[:-1])), nn.BatchNorm1d):
+            p.requires_grad = True
+        # (c) 解冻后端的 CorNet 上下文网络和最终分类头 (由于你有head_c配置)
+        elif "cornet" in name or "final_fc" in name:
+            p.requires_grad = True
 
-                out = self.conv2(out)
-                out = self.bn2(out)
-
-                if self.downsample is not None:
-                    identity = self.downsample(x)
-
-                # 【核心修改】：在残差相加前应用 Adapter
-                out = self.adapter(out)
-
-                out += identity
-                out = self.relu(out)
-                return out
-            
-            # 绑定新的 forward 方法到该实例
-            module.forward = types.MethodType(new_forward, module)
-            
     return model
 
 # 2. 数据处理逻辑
@@ -168,7 +202,6 @@ UNFREEZE_PRESETS = {
     "head_3_4": ["final_fc", "resnet.layer3", "resnet.layer4"],
     "head_c": ["final_fc", "cornet"],
     "head_c_4": ["final_fc", "cornet", "resnet.layer4"],
-    "adapter": ["adapter", "final_fc"]
 }
 UNFREEZE_PRESET = "adapter"  # 当前启用哪个组合
 
@@ -451,7 +484,7 @@ if __name__ == '__main__':
             model.load_state_dict(base_state, strict=True)
             
             if UNFREEZE_PRESET == "adapter" or "adapter" in layers_to_unfreeze:
-                inject_adapters(model, reduction=4)  # reduction可以调节，越大参数越少
+                inject_ultimate_adapters_and_unfreeze_bn(model)
 
             set_trainable_by_prefix(model, layers_to_unfreeze)
 
