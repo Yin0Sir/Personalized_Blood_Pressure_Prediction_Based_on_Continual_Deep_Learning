@@ -52,6 +52,65 @@ class CLDataset(data.Dataset):
     def __getitem__(self, idx):
         return self.Input[idx, :], self.Label[[idx]]
 
+import torch.nn as nn
+import types
+
+# --- 新增：1D Adapter 模块 ---
+class Adapter1d(nn.Module):
+    def __init__(self, channels, reduction=4):
+        super(Adapter1d, self).__init__()
+        # 瓶颈结构：降维再升维，减少参数量
+        mid_channels = max(channels // reduction, 1)
+        self.down_conv = nn.Conv1d(channels, mid_channels, kernel_size=1, bias=False)
+        self.relu = nn.ReLU(inplace=True)
+        self.up_conv = nn.Conv1d(mid_channels, channels, kernel_size=1, bias=False)
+        
+        # 关键：将升维层的权重初始化为0
+        # 这样在训练初期，Adapter的输出为0，完全等价于预训练基模的原始特征
+        nn.init.zeros_(self.up_conv.weight)
+
+    def forward(self, x):
+        return x + self.up_conv(self.relu(self.down_conv(x)))
+
+# --- 新增：动态注入 Adapter 的函数 ---
+def inject_adapters(model, reduction=4):
+    #  遍历模型，找到所有的 BasicBlock，在残差相加之前动态插入 Adapter。
+    from Model_Def.DDCCor import BasicBlock # 确保引入了你的基础块
+    
+    for name, module in model.named_modules():
+        if isinstance(module, BasicBlock):
+            # 获取当前 Block 的输出通道数
+            out_channels = module.bn2.num_features
+            # 实例化 Adapter 并挂载到 module 上
+            module.adapter = Adapter1d(out_channels, reduction=reduction).to(next(model.parameters()).device)
+            
+            # 替换原有的 forward 方法
+            old_forward = module.forward
+            def new_forward(self, x):
+                identity = x
+
+                out = self.conv1(x)
+                out = self.bn1(out)
+                out = self.relu(out)
+
+                out = self.conv2(out)
+                out = self.bn2(out)
+
+                if self.downsample is not None:
+                    identity = self.downsample(x)
+
+                # 【核心修改】：在残差相加前应用 Adapter
+                out = self.adapter(out)
+
+                out += identity
+                out = self.relu(out)
+                return out
+            
+            # 绑定新的 forward 方法到该实例
+            module.forward = types.MethodType(new_forward, module)
+            
+    return model
+
 # 2. 数据处理逻辑
 def _subject_to_key(sub):
     while True:
@@ -109,9 +168,9 @@ UNFREEZE_PRESETS = {
     "head_3_4": ["final_fc", "resnet.layer3", "resnet.layer4"],
     "head_c": ["final_fc", "cornet"],
     "head_c_4": ["final_fc", "cornet", "resnet.layer4"],
-
+    "adapter": ["adapter", "final_fc"]
 }
-UNFREEZE_PRESET = "head_c"  # 当前启用哪个组合
+UNFREEZE_PRESET = "adapter"  # 当前启用哪个组合
 
 def set_trainable_by_prefix(model, prefixes):
     for p in model.parameters():
@@ -359,8 +418,8 @@ if __name__ == '__main__':
     selected_users = random.sample(valid_users, min(1000, len(valid_users)))
     
     all_results = []
-    modes = ['global_eval', 'seq_ft', 'seq_ewc', 'seq_replay', 'seq_hybrid']
-    # modes = ['global_eval', 'seq_hybrid']
+    # modes = ['global_eval', 'seq_ft', 'seq_ewc', 'seq_replay', 'seq_hybrid']
+    modes = ['global_eval', 'seq_hybrid']
     pooled = {m: {"y_true": [], "y_pred": []} for m in modes} # 用于后续整体统计的 pooled 结果容器
     layers_to_unfreeze = UNFREEZE_PRESETS[UNFREEZE_PRESET]
     
@@ -390,6 +449,10 @@ if __name__ == '__main__':
         for mode in modes:
             model = copy.deepcopy(base_model).to(device)
             model.load_state_dict(base_state, strict=True)
+            
+            if UNFREEZE_PRESET == "adapter" or "adapter" in layers_to_unfreeze:
+                inject_adapters(model, reduction=4)  # reduction可以调节，越大参数越少
+
             set_trainable_by_prefix(model, layers_to_unfreeze)
 
             if mode == modes[0]:
