@@ -228,6 +228,23 @@ UNFREEZE_PRESETS = {
 }
 UNFREEZE_PRESET = "head_c"  # 当前启用哪个组合
 
+EXCLUDED_USERS = {
+    "p001625_1",
+    "p000205_1",
+    "p003834_1",
+    "p003021_1",
+    "p004536_1",
+    "p002998_1",
+    "p004339_1",
+    "p002496_1",
+    "p001764_1",
+    "p001092_1",
+    "p005122_1",
+    "p005255_1",
+    "p004112_1",
+    "p005934_1",
+}
+
 def set_trainable_by_prefix(model, prefixes):
     for p in model.parameters():
         p.requires_grad = False
@@ -461,7 +478,6 @@ if __name__ == '__main__':
         mat_path = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalFree_Test_Subset.mat'
     elif os.name == 'posix':  # Linux
         mat_path = '/home/zxy233580/projects/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalFree_Test_Subset.mat'
-        # mat_path = '/home/zxy233580/projects/Data/PulseDB/MIMIC_Subset_Files/MIMIC_CalFree_Test_Subset.mat'
     pretrained_model_path = 'PTH/121517/trained_model.pth'
     
     print_current_gpu_info()
@@ -470,7 +486,7 @@ if __name__ == '__main__':
     
     # 初始化数据
     signals, labels, user2idx_sorted = load_and_sort_user_data(mat_path, target)
-    valid_users = [u for u in user2idx_sorted.keys() if len(user2idx_sorted[u]) >= 300]
+    valid_users = [u for u in user2idx_sorted.keys() if len(user2idx_sorted[u]) >= 300 and u not in EXCLUDED_USERS]
     selected_users = random.sample(valid_users, min(1000, len(valid_users)))
     
     all_results = []
@@ -497,7 +513,7 @@ if __name__ == '__main__':
         idx_sorted = user2idx_sorted[user_id]
         
         if USE_VAL:
-            train_idx, val_idx, test_idx = split_user_stream(idx_sorted, train_ratio=0.8, use_val=True)
+            train_idx, val_idx, test_idx = split_user_stream(idx_sorted, train_ratio=0.9, use_val=True)
             val_loader = data.DataLoader(CLDataset(signals[val_idx], labels[val_idx]), batch_size=8, shuffle=False)
         else:
             train_idx, test_idx = split_user_stream(idx_sorted, train_ratio=0.8, use_val=False)
