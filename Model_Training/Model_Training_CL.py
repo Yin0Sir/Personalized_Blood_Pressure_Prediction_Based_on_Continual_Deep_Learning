@@ -474,8 +474,8 @@ if __name__ == '__main__':
     selected_users = random.sample(valid_users, min(1000, len(valid_users)))
     
     all_results = []
-    # modes = ['global_eval', 'seq_ft', 'seq_ewc', 'seq_replay', 'seq_hybrid']
-    modes = ['global_eval', 'seq_hybrid']
+    modes = ['global_eval', 'seq_ft', 'seq_ewc', 'seq_replay', 'seq_hybrid']
+    # modes = ['global_eval', 'seq_hybrid']
     pooled = {m: {"y_true": [], "y_pred": []} for m in modes} # 用于后续整体统计的 pooled 结果容器
     layers_to_unfreeze = UNFREEZE_PRESETS[UNFREEZE_PRESET]
     
