@@ -546,11 +546,8 @@ class Model_Trainer:
         for i, v in enumerate(b1_mae_hist, 1):
             result_dict[f'b1_mae_after_batch{i}'] = float(v)
 
-        result_dict['b1_mae_first'] = float(b1_mae_hist[0]) if len(b1_mae_hist) else 0.0
-        result_dict['b1_mae_last']  = float(b1_mae_hist[-1]) if len(b1_mae_hist) else 0.0
-
-        # 遗忘度（你原来逻辑）
-        result_dict['forget'] = (b1_mae_hist[-1] - b1_mae_hist[0]) if len(b1_mae_hist) >= 2 else 0.0
+        # 【修改后】平均遗忘度 (Average Forgetting)
+        result_dict['forget'] = float(np.mean([v - b1_mae_hist[0] for v in b1_mae_hist[1:]]))
 
         if verbose >= 1:
             print(f"[{user_id}] {mode} done | MAE {test_mae:.4f} | Forget {result_dict['forget']:.4f}")
