@@ -478,7 +478,7 @@ if __name__ == '__main__':
         mat_path = 'D:/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalFree_Test_Subset.mat'
     elif os.name == 'posix':  # Linux
         mat_path = '/home/zxy233580/projects/Data/PulseDB/Supplementary_Subset_Files/VitalDB_CalFree_Test_Subset.mat'
-    pretrained_model_path = 'PTH/121517/trained_model.pth'
+    pretrained_model_path = 'PTH/121517/trained_model.pth' if target == 'SBP' else 'PTH/233948/trained_model.pth'
     
     print_current_gpu_info()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
