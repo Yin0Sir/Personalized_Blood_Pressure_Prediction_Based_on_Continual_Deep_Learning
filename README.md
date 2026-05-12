@@ -229,7 +229,7 @@ python model_test.py
 ## 9. 已知注意事项
 
 1. 代码当前默认外部本地路径（如 `D:/Data/...`），需要手动改为你的数据路径。
-2. `Model_Training.py` 中实例化函数名写为 `DDCCor.DDCCor_Net()`，而模型文件中定义为 `DDCCor.DDCCR_Net()`；运行该脚本前请先核对命名一致性。
+2. `Model_Training.py` 中实例化函数名写为 `DDCCor.DDCCor_Net()`，而模型文件中实际定义为 `DDCCor.DDCCR_Net()`；运行该脚本前建议统一为 `DDCCor.DDCCR_Net()`。
 3. 本仓库未内置统一的 `requirements.txt` 与自动化测试配置（如 `pytest`）。
 
 ---
