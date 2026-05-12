@@ -76,7 +76,7 @@ class Model_Trainer:
         batchrecordcounter = 1
   
         # Print model info to command line
-        Writer = SW(os.path.join('Model_Training/TensorBoard', TimeID))
+        Writer = SW(os.path.join('TensorBoard', TimeID))
         print('ModelID: '+ModelID)
         self.Model_Info()
         # 将模型信息打印为字符串，以便可以在 TensorBoard 中记录
@@ -292,7 +292,7 @@ class Model_Trainer:
         show_progress=False,  # True 才显示 progressbar
 ):
         TimeID = self.TimeID
-        tb_dir = os.path.join('Model_Training', 'TensorBoard', 'CL_Experiments', TimeID, mode, str(user_id))
+        tb_dir = os.path.join('TensorBoard', 'CL_Experiments', TimeID, mode, str(user_id))
         Writer = SW(tb_dir)
 
         # 将模型信息写入 TensorBoard（与 Train_Model 格式一致）

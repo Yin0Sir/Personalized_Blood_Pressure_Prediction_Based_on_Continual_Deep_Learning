@@ -591,4 +591,4 @@ if __name__ == '__main__':
         all_results.append(user_res)
         
     # 保存与统计汇总
-    save_and_summarize_results(all_results, './Model_Training/CL_Results', target, TimeID, pooled=pooled)
+    save_and_summarize_results(all_results, './CL_Results', target, TimeID, pooled=pooled)
