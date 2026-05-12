@@ -8,10 +8,9 @@ __pycache__/
 .vscode/
 
 # ===== TensorBoard 日志文件（自动生成，无需版本控制）=====
-TensorBoard/
+TensorBoard/CL_Experiments/
 
 # ===== 模型文件=====
-PTH/
 *.pth
 
 # ===== 临时/日志/测试文件 =====
