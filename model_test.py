@@ -1,6 +1,6 @@
 from torchinfo import summary
 import torch
-from Model_Training.Model_Def import DDCCor
+from Model_Def import DDCCor
 from ptflops import get_model_complexity_info
 
 # 定义测试函数
